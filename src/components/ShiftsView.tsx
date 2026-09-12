@@ -1,9 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { collection, onSnapshot, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { getDb } from '../lib/firebase';
-import { UserShift } from '../types';
+import { UserShift, ParkingRecord } from '../types';
 import { useParkingLots } from '../lib/parkingLots';
 import { analyzeShiftDuplicates, DeduplicationResult } from '../lib/shiftDeduplication';
+import { reconcileAllShifts } from '../lib/shiftReconciliation';
+import ShiftTicketsModal from './ShiftTicketsModal';
 import { 
   History, 
   Clock, 
@@ -27,7 +29,8 @@ import {
   EyeOff,
   AlertTriangle,
   Building2,
-  MessageSquare
+  MessageSquare,
+  Car
 } from 'lucide-react';
 
 interface ExtendedShift extends UserShift {
@@ -60,6 +63,10 @@ export default function ShiftsView() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [selectedShift, setSelectedShift] = useState<ExtendedShift | null>(null);
 
+  // Modal state for processed cars / tickets breakdown
+  const [records, setRecords] = useState<ParkingRecord[]>([]);
+  const [selectedShiftForTickets, setSelectedShiftForTickets] = useState<ExtendedShift | null>(null);
+
   // Compare Modal for duplicate cuts
   const [comparingGroup, setComparingGroup] = useState<{ canonical: ExtendedShift; superseded: ExtendedShift[] } | null>(null);
 
@@ -70,9 +77,20 @@ export default function ShiftsView() {
   const [notes, setNotes] = useState('');
   const [isClosed, setIsClosed] = useState(false);
 
-  // Listen to both collections in real-time
+  // Listen to collections in real-time
   useEffect(() => {
     const db = getDb();
+
+    // Listen to parking_records to reconcile cars processed per shift
+    const unsubRecords = onSnapshot(collection(db, 'parking_records'), (snapRecords) => {
+      const list: ParkingRecord[] = [];
+      snapRecords.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() } as unknown as ParkingRecord);
+      });
+      setRecords(list);
+    }, (err) => {
+      console.error('Error al suscribirse a parking_records:', err);
+    });
 
     // Listen to user_shifts
     const unsubShifts = onSnapshot(collection(db, 'user_shifts'), (snapShifts) => {
@@ -150,6 +168,7 @@ export default function ShiftsView() {
     });
 
     return () => {
+      unsubRecords();
       unsubShifts();
     };
   }, []);
@@ -289,6 +308,22 @@ export default function ShiftsView() {
   const totalExpectedAmount = activeFilteredShifts.reduce((sum, s) => sum + (s.expectedAmount || 0), 0);
   const totalActualAmount = activeFilteredShifts.reduce((sum, s) => sum + (s.actualAmount || 0), 0);
   const totalDifferenceAmount = activeFilteredShifts.reduce((sum, s) => sum + (s.difference || 0), 0);
+
+  // Reconcile shifts with individual parking ticket records
+  const reconciliations = useMemo(() => {
+    return reconcileAllShifts(shifts, records);
+  }, [shifts, records]);
+
+  // Aggregate cars count and ticket revenue in current active filter
+  const totalCarsProcessed = activeFilteredShifts.reduce((sum, s) => {
+    const rec = reconciliations.get(s.shiftId);
+    return sum + (rec?.carsCount || 0);
+  }, 0);
+
+  const totalCarsAmountPaid = activeFilteredShifts.reduce((sum, s) => {
+    const rec = reconciliations.get(s.shiftId);
+    return sum + (rec?.totalChargedInCars || 0);
+  }, 0);
 
   // Duplicates within current filtered list
   const duplicatesInFilter = filteredShifts.filter((s) => s.isDuplicate);
@@ -488,7 +523,7 @@ export default function ShiftsView() {
       </div>
 
       {/* Metrics Summary Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5">
         {/* Card 1: Total Cortes */}
         <div className="bg-slate-850 border border-slate-700/40 rounded-2xl p-4 flex flex-col justify-between shadow-lg">
           <div className="flex items-center justify-between">
@@ -499,50 +534,70 @@ export default function ShiftsView() {
           </div>
           <div className="mt-2">
             <span className="text-xl font-bold text-white block">{totalCutsCount}</span>
-            {duplicatesInFilter.length > 0 && (
+            {duplicatesInFilter.length > 0 ? (
               <span className="text-[10px] text-amber-400 font-semibold mt-0.5 block">
                 +{duplicatesInFilter.length} re-emitido{duplicatesInFilter.length > 1 ? 's' : ''} excluido{duplicatesInFilter.length > 1 ? 's' : ''}
               </span>
+            ) : (
+              <span className="text-[10px] text-slate-400 mt-0.5 block">Cortes procesados</span>
             )}
           </div>
         </div>
 
-        {/* Card 2: Total Esperado */}
+        {/* Card 2: Autos Cobrados (Nuevo) */}
         <div className="bg-slate-850 border border-slate-700/40 rounded-2xl p-4 flex flex-col justify-between shadow-lg">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Cobrado (Sist.)</span>
+            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Autos Cobrados</span>
+            <div className="p-2.5 bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 rounded-xl">
+              <Car size={16} />
+            </div>
+          </div>
+          <div className="mt-2">
+            <span className="text-xl font-bold text-cyan-300 block">{totalCarsProcessed} autos</span>
+            <span className="text-[10px] font-mono text-slate-300 mt-0.5 block">
+              ${totalCarsAmountPaid.toFixed(2)} en boletos
+            </span>
+          </div>
+        </div>
+
+        {/* Card 3: Total Debió Entregar (Esperado) */}
+        <div className="bg-slate-850 border border-slate-700/40 rounded-2xl p-4 flex flex-col justify-between shadow-lg">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Debió Entregar (Esperado)</span>
             <div className="p-2.5 bg-slate-500/10 border border-slate-600/20 text-slate-300 rounded-xl">
               <DollarSign size={16} />
             </div>
           </div>
           <div className="mt-2">
             <span className="text-xl font-bold text-slate-200 block">${totalExpectedAmount.toFixed(2)}</span>
-            {totalDuplicatesAmountSaved > 0 && (
+            {totalDuplicatesAmountSaved > 0 ? (
               <span className="text-[10px] text-emerald-400 font-semibold mt-0.5 block">
                 -${totalDuplicatesAmountSaved.toFixed(2)} duplicados prevenidos
               </span>
+            ) : (
+              <span className="text-[10px] text-slate-400 mt-0.5 block">Calculado por sistema</span>
             )}
           </div>
         </div>
 
-        {/* Card 3: Total Entregado */}
+        {/* Card 4: Total Entregado Real */}
         <div className="bg-slate-850 border border-slate-700/40 rounded-2xl p-4 flex flex-col justify-between shadow-lg">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Entregado Real (Fís.)</span>
+            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Entregó al Final (Físico)</span>
             <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl">
               <CheckCircle size={16} />
             </div>
           </div>
           <div className="mt-2">
             <span className="text-xl font-bold text-emerald-400 block">${totalActualAmount.toFixed(2)}</span>
-            <span className="text-[10px] text-slate-400 mt-0.5 block">Suma deduplicada sin inflación</span>
+            <span className="text-[10px] text-slate-400 mt-0.5 block">Efectivo físico entregado</span>
           </div>
         </div>
 
-        {/* Card 4: Diferencia Total */}
-        <div className="bg-slate-850 border border-slate-700/40 rounded-2xl p-4 flex flex-col justify-between shadow-lg">
+        {/* Card 5: Diferencia Total */}
+        <div className="bg-slate-850 border border-slate-700/40 rounded-2xl p-4 flex flex-col justify-between shadow-lg col-span-2 md:col-span-1">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Diferencia Neta</span>
+            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Diferencia de Cuadre</span>
             <div className={`p-2.5 rounded-xl border ${totalDifferenceAmount === 0 ? 'bg-slate-500/10 border-slate-600/20 text-slate-300' : totalDifferenceAmount < 0 ? 'bg-red-500/10 border-red-500/20 text-red-400 animate-pulse' : 'bg-amber-500/10 border-amber-500/20 text-amber-400'}`}>
               <TrendingDown size={16} />
             </div>
@@ -570,14 +625,15 @@ export default function ShiftsView() {
                 <tr className="border-b border-slate-700 text-slate-400 text-xs font-bold uppercase tracking-wider bg-slate-800/40">
                   <th className="py-4 px-5 font-mono">ID Registro</th>
                   <th className="py-4 px-4">Estacionamiento</th>
-                  <th className="py-4 px-4 text-center">Tipo</th>
+                  <th className="py-4 px-3 text-center">Tipo</th>
                   <th className="py-4 px-4">Cajero</th>
-                  <th className="py-4 px-5">Inicio / Fin</th>
-                  <th className="py-4 px-4">Cobrado (Sist.)</th>
-                  <th className="py-4 px-4">Entregado (Fís.)</th>
+                  <th className="py-4 px-4">Inicio / Fin</th>
+                  <th className="py-4 px-4">Autos Cobrados</th>
+                  <th className="py-4 px-4">Debió Entregar (Esperado)</th>
+                  <th className="py-4 px-4">Entregó al Final (Físico)</th>
                   <th className="py-4 px-4">Diferencia</th>
-                  <th className="py-4 px-5">Observaciones</th>
-                  <th className="py-4 px-4 text-center">Estado</th>
+                  <th className="py-4 px-4">Observaciones</th>
+                  <th className="py-4 px-3 text-center">Estado</th>
                   <th className="py-4 px-5 text-right">Acciones</th>
                 </tr>
               </thead>
@@ -594,6 +650,9 @@ export default function ShiftsView() {
                   // Row highlight if duplicate
                   const isSuperseded = shift.isDuplicate;
                   const isCanonical = shift.duplicateStatus === 'canonical';
+
+                  // Reconciliation with parking tickets
+                  const rec = reconciliations.get(shift.shiftId);
 
                   return (
                     <tr 
@@ -631,7 +690,7 @@ export default function ShiftsView() {
                       </td>
 
                       {/* Tipo */}
-                      <td className="py-4 px-4 text-center">
+                      <td className="py-4 px-3 text-center">
                         {shift.sourceCollection === 'cash_cuts' ? (
                           <span className="inline-flex items-center gap-0.5 text-[9px] font-bold tracking-wider uppercase text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded border border-emerald-500/20">
                             Corte
@@ -647,7 +706,7 @@ export default function ShiftsView() {
                       <td className="py-4 px-4 font-semibold text-white">@{shift.username}</td>
 
                       {/* Inicio / Fin */}
-                      <td className="py-4 px-5 text-slate-400">
+                      <td className="py-4 px-4 text-slate-400">
                         <div className="flex flex-col">
                           <span className="flex items-center gap-1">
                             <Clock size={11} className="text-emerald-500 shrink-0" />
@@ -667,40 +726,94 @@ export default function ShiftsView() {
                         </div>
                       </td>
 
-                      {/* Cobrado Sist */}
+                      {/* Autos Cobrados (Nuevo) */}
+                      <td className="py-4 px-4">
+                        {rec && rec.carsCount > 0 ? (
+                          <div className="flex flex-col items-start gap-1">
+                            <button
+                              onClick={() => setSelectedShiftForTickets(shift)}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold bg-blue-500/15 hover:bg-blue-500/25 text-blue-300 border border-blue-500/30 hover:border-blue-400 transition-all cursor-pointer group"
+                              title="Haz clic para ver la lista de autos cobrados en este turno"
+                            >
+                              <Car size={13} className="shrink-0 text-blue-400 group-hover:scale-110 transition-transform" />
+                              <span>{rec.carsCount} autos</span>
+                            </button>
+                            <span className="text-[10px] font-mono text-slate-400">
+                              ${rec.totalChargedInCars.toFixed(2)} en boletos
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col text-slate-500">
+                            <span className="text-xs italic">0 autos</span>
+                            <span className="text-[10px]">Sin boletos</span>
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Debió Entregar (Esperado por sistema) */}
                       <td className="py-4 px-4 font-mono">
                         {isSuperseded ? (
                           <div className="flex flex-col">
                             <span className="line-through text-slate-500">${(shift.expectedAmount || 0).toFixed(2)}</span>
-                            <span className="text-[9px] text-amber-400 font-sans">No sumado</span>
+                            <span className="text-[9px] text-amber-400 font-sans">Re-emitido</span>
                           </div>
                         ) : (
-                          <span className="text-slate-300 font-semibold">${(shift.expectedAmount || 0).toFixed(2)}</span>
+                          <div className="flex flex-col">
+                            <span className="text-slate-200 font-bold text-sm">
+                              ${(shift.expectedAmount || 0).toFixed(2)}
+                            </span>
+                            {rec && rec.carsCount > 0 && (
+                              rec.matchesExpected ? (
+                                <span className="text-[10px] text-emerald-400 font-sans font-semibold">
+                                  ✓ Coincide con boletos
+                                </span>
+                              ) : rec.differenceToExpected > 0 ? (
+                                <span className="text-[10px] text-blue-400 font-sans font-medium" title="El sistema esperaba más dinero que los boletos cobrados, típicamente por fondo inicial de caja">
+                                  +${rec.differenceToExpected.toFixed(2)} fondo/extra
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-amber-400 font-sans font-medium">
+                                  -${Math.abs(rec.differenceToExpected).toFixed(2)} vs boletos
+                                </span>
+                              )
+                            )}
+                          </div>
                         )}
                       </td>
 
-                      {/* Entregado Físico */}
-                      <td className="py-4 px-4 font-mono font-semibold">
+                      {/* Entregó al Final (Físico) */}
+                      <td className="py-4 px-4 font-mono">
                         {isSuperseded ? (
                           <div className="flex flex-col">
                             <span className="line-through text-slate-500">${shift.actualAmount !== null ? shift.actualAmount.toFixed(2) : '-'}</span>
                             <span className="text-[9px] text-amber-400 font-sans">Protegido</span>
                           </div>
                         ) : (
-                          <span className="text-white">${shift.actualAmount !== null ? shift.actualAmount.toFixed(2) : '-'}</span>
+                          <div className="flex flex-col">
+                            <span className="text-white font-bold text-sm">
+                              ${shift.actualAmount !== null ? shift.actualAmount.toFixed(2) : '-'}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-sans">
+                              {shift.actualAmount !== null ? 'Entregado en mano' : 'Por entregar'}
+                            </span>
+                          </div>
                         )}
                       </td>
 
-                      {/* Diferencia */}
+                      {/* Diferencia (Cuadre) */}
                       <td className="py-4 px-4">
                         {shift.difference !== null ? (
-                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-mono text-[11px] font-bold border
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full font-mono text-[11px] font-bold border
                             ${shift.difference === 0 
                               ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20' 
                               : isNegativeDiscrepancy 
                                 ? 'text-red-400 bg-red-400/10 border-red-500/30 font-extrabold animate-pulse' 
                                 : 'text-amber-400 bg-amber-400/10 border-amber-400/20'}`}>
-                            {shift.difference > 0 ? `+$${shift.difference.toFixed(2)}` : `-$${Math.abs(shift.difference).toFixed(2)}`}
+                            {shift.difference === 0 
+                              ? '✓ $0.00 (Cuadrado)' 
+                              : shift.difference > 0 
+                                ? `+$${shift.difference.toFixed(2)} (Sobrante)` 
+                                : `-$${Math.abs(shift.difference).toFixed(2)} (Faltante)`}
                           </span>
                         ) : (
                           <span className="text-slate-500 italic">-</span>
@@ -708,7 +821,7 @@ export default function ShiftsView() {
                       </td>
 
                       {/* Observaciones */}
-                      <td className="py-4 px-5 max-w-[220px]">
+                      <td className="py-4 px-4 max-w-[200px]">
                         {shift.notes && shift.notes.trim() ? (
                           <div className="flex items-start gap-1.5 bg-slate-900/60 p-2 rounded-xl border border-slate-700/50 text-slate-200">
                             <MessageSquare size={13} className="text-blue-400 shrink-0 mt-0.5" />
@@ -720,17 +833,17 @@ export default function ShiftsView() {
                       </td>
 
                       {/* Estado */}
-                      <td className="py-4 px-4 text-center">
+                      <td className="py-4 px-3 text-center">
                         {isSuperseded ? (
-                          <span className="inline-flex items-center gap-1 text-[9px] font-bold tracking-wider uppercase text-amber-400 bg-amber-400/10 px-2.5 py-0.5 rounded-full border border-amber-400/30">
+                          <span className="inline-flex items-center gap-1 text-[9px] font-bold tracking-wider uppercase text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full border border-amber-400/30">
                             Reemplazado
                           </span>
                         ) : shift.isClosed ? (
-                          <span className="inline-flex items-center gap-1 text-[9px] font-bold tracking-wider uppercase text-slate-400 bg-slate-400/10 px-2.5 py-0.5 rounded-full border border-slate-400/20">
+                          <span className="inline-flex items-center gap-1 text-[9px] font-bold tracking-wider uppercase text-slate-400 bg-slate-400/10 px-2 py-0.5 rounded-full border border-slate-400/20">
                             Cerrado
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-[9px] font-bold tracking-wider uppercase text-amber-400 bg-amber-400/10 px-2.5 py-0.5 rounded-full border border-amber-400/20">
+                          <span className="inline-flex items-center gap-1 text-[9px] font-bold tracking-wider uppercase text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full border border-amber-400/20">
                             Abierto
                           </span>
                         )}
@@ -739,6 +852,15 @@ export default function ShiftsView() {
                       {/* Acciones */}
                       <td className="py-4 px-5 text-right">
                         <div className="flex items-center justify-end gap-1.5">
+                          {/* Botón Ver autos cobrados */}
+                          <button
+                            onClick={() => setSelectedShiftForTickets(shift)}
+                            className="p-1.5 bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-600 hover:text-white rounded-lg transition-all cursor-pointer"
+                            title="Ver detalle y boletos de autos cobrados"
+                          >
+                            <Car size={13} />
+                          </button>
+
                           {isSuperseded && shift.supersededBy && (
                             <button
                               onClick={() => {
@@ -1066,6 +1188,16 @@ export default function ShiftsView() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Shift Tickets Reconciliation Modal */}
+      {selectedShiftForTickets && (
+        <ShiftTicketsModal
+          shift={selectedShiftForTickets}
+          records={records}
+          onClose={() => setSelectedShiftForTickets(null)}
+          getLotName={getLotName}
+        />
       )}
     </div>
   );

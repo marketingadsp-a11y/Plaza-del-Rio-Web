@@ -19,7 +19,8 @@ import {
   X,
   Info,
   History,
-  TrendingDown
+  TrendingDown,
+  Calendar
 } from 'lucide-react';
 import { 
   AreaChart, 
@@ -37,6 +38,7 @@ import {
   Legend
 } from 'recharts';
 import DemoSeeder from './DemoSeeder';
+import { computeDateRange, DateFilterMode } from '../lib/dateRanges';
 
 export default function DashboardView() {
   const [records, setRecords] = useState<ParkingRecord[]>([]);
@@ -46,6 +48,11 @@ export default function DashboardView() {
   const [loading, setLoading] = useState(true);
   const [revenueMode, setRevenueMode] = useState<'REAL' | 'FISICO' | 'TEORICO'>('REAL');
   const [showCutsModal, setShowCutsModal] = useState(false);
+  const [dateFilterMode, setDateFilterMode] = useState<DateFilterMode>('HOY');
+  const [customDate, setCustomDate] = useState<string>(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
 
   // Load rates
   useEffect(() => {
@@ -162,36 +169,37 @@ export default function DashboardView() {
   const activeRecords = records.filter(r => r.status === 'ACTIVE');
   const activeCount = activeRecords.length;
 
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  const startOfTodayMs = startOfToday.getTime();
+  // Active Date Range based on selected filter
+  const dateRange = React.useMemo(() => {
+    return computeDateRange(dateFilterMode, customDate);
+  }, [dateFilterMode, customDate]);
 
-  const isSameDay = (timestamp: number, target: Date) => {
-    const d = new Date(timestamp);
-    return d.getFullYear() === target.getFullYear() &&
-           d.getMonth() === target.getMonth() &&
-           d.getDate() === target.getDate();
-  };
+  // Completed records in selected date range
+  const completedInPeriod = React.useMemo(() => {
+    return records.filter(r => 
+      r.status === 'COMPLETED' && 
+      r.exitTime !== null && 
+      r.exitTime !== undefined &&
+      r.exitTime >= dateRange.start &&
+      r.exitTime <= dateRange.end
+    );
+  }, [records, dateRange]);
 
-  const completedToday = records.filter(r => 
-    r.status === 'COMPLETED' && 
-    r.exitTime !== null && 
-    r.exitTime >= startOfTodayMs
-  );
+  // 1. Boletos registrados como cobrados en sistema en el período (monto teórico)
+  const theoreticalEarningsInPeriod = React.useMemo(() => {
+    return completedInPeriod.reduce((sum, r) => sum + (r.amountPaid || 0), 0);
+  }, [completedInPeriod]);
 
-  // 1. Boletos registrados como cobrados en sistema hoy (monto teórico)
-  const theoreticalEarningsToday = completedToday.reduce((sum, r) => sum + (r.amountPaid || 0), 0);
-
-  // 2. Cortes de caja de hoy (excluyendo duplicados para no inflar métricas)
-  const todayCuts = React.useMemo(() => {
+  // 2. Cortes de caja del período (excluyendo duplicados para no inflar métricas)
+  const periodCuts = React.useMemo(() => {
     return shifts.filter(s => {
       if (!s.isClosed || s.isDuplicate) return false;
       const cutTimestamp = s.endTime || s.startTime;
-      return cutTimestamp ? isSameDay(cutTimestamp, startOfToday) : false;
+      return cutTimestamp ? (cutTimestamp >= dateRange.start && cutTimestamp <= dateRange.end) : false;
     });
-  }, [shifts, startOfToday]);
+  }, [shifts, dateRange]);
 
-  // Análisis de cortes: físico entregado, esperado y saldos negativos / faltantes
+  // Análisis de cortes del período: físico entregado, esperado y saldos negativos / faltantes
   const { 
     cutsActualDelivered, 
     cutsExpectedAmount, 
@@ -205,9 +213,9 @@ export default function DashboardView() {
     let negTotal = 0;
     let posTotal = 0;
     let netDiff = 0;
-    const negList: typeof todayCuts = [];
+    const negList: typeof periodCuts = [];
 
-    todayCuts.forEach(s => {
+    periodCuts.forEach(s => {
       actual += (s.actualAmount || 0);
       expected += (s.expectedAmount || 0);
 
@@ -232,21 +240,19 @@ export default function DashboardView() {
       totalSobrantes: posTotal,
       totalDiferenciaCortes: netDiff
     };
-  }, [todayCuts]);
+  }, [periodCuts]);
 
-  // Ingreso Real de Hoy:
+  // Ingreso Real del período:
   // Tomamos los boletos cobrados en el sistema y descontamos los faltantes / saldos negativos de los cortes cerrados.
   // Así evitamos sumar ingresos de cortes que cerraron en negativo (dinero que no ingresó a caja).
-  const realEarningsToday = Math.max(0, theoreticalEarningsToday + totalSaldosNegativos);
+  const realEarningsInPeriod = Math.max(0, theoreticalEarningsInPeriod + totalSaldosNegativos);
 
   // Monto a mostrar según el modo seleccionado
   const displayRevenue = revenueMode === 'REAL' 
-    ? realEarningsToday 
+    ? realEarningsInPeriod 
     : revenueMode === 'FISICO' 
       ? cutsActualDelivered 
-      : theoreticalEarningsToday;
-
-  const earningsToday = displayRevenue;
+      : theoreticalEarningsInPeriod;
 
   // Smart calculation for Active Cashiers:
   // 1. Cashiers who have an explicitly open shift in shifts state
@@ -285,9 +291,10 @@ export default function DashboardView() {
     return activeSet.size;
   }, [shifts, records]);
 
-  // Chart data: Distribution by Vehicle Type
+  // Chart data: Distribution by Vehicle Type in period
   const vehicleTypeCounts: { [key: string]: number } = {};
-  records.forEach(r => {
+  const recordsForVehiclePie = completedInPeriod.length > 0 ? completedInPeriod : records;
+  recordsForVehiclePie.forEach(r => {
     const type = r.vehicleType || 'Auto';
     vehicleTypeCounts[type] = (vehicleTypeCounts[type] || 0) + 1;
   });
@@ -299,50 +306,85 @@ export default function DashboardView() {
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6'];
 
-  // Chart data: Preferred Payment Methods
+  // Chart data: Preferred Payment Methods for period
   let cashCount = 0;
   let cardCount = 0;
-  completedToday.forEach(r => {
+  completedInPeriod.forEach(r => {
     if (r.paymentMethod === 'Efectivo') cashCount++;
     if (r.paymentMethod === 'Tarjeta') cardCount++;
   });
 
   const paymentData = [
-    { name: 'Efectivo', cantidad: cashCount, monto: completedToday.filter(r => r.paymentMethod === 'Efectivo').reduce((s, r) => s + (r.amountPaid || 0), 0) },
-    { name: 'Tarjeta', cantidad: cardCount, monto: completedToday.filter(r => r.paymentMethod === 'Tarjeta').reduce((s, r) => s + (r.amountPaid || 0), 0) }
+    { name: 'Efectivo', cantidad: cashCount, monto: completedInPeriod.filter(r => r.paymentMethod === 'Efectivo').reduce((s, r) => s + (r.amountPaid || 0), 0) },
+    { name: 'Tarjeta', cantidad: cardCount, monto: completedInPeriod.filter(r => r.paymentMethod === 'Tarjeta').reduce((s, r) => s + (r.amountPaid || 0), 0) }
   ];
 
-  // Chart data: Hourly occupancy/revenue today
-  // Let's create an array of hours (e.g. 7:00 to 22:00 or group by hourly slots)
-  const hourlyDataMap: { [hour: number]: { hourLabel: string; ingresos: number; autos: number } } = {};
-  for (let h = 0; h < 24; h++) {
-    hourlyDataMap[h] = {
-      hourLabel: `${h.toString().padStart(2, '0')}:00`,
-      ingresos: 0,
-      autos: 0
-    };
-  }
-
-  // Populate autos active and exited today grouped by hour of event
-  records.forEach(r => {
-    // If entered today, add to occupancy for that entry hour
-    if (r.entryTime >= startOfTodayMs) {
-      const entryHour = new Date(r.entryTime).getHours();
-      if (entryHour >= 0 && entryHour < 24) {
-        hourlyDataMap[entryHour].autos += 1;
+  // Timeline Chart Data:
+  // If single day (Hoy, Ayer, or manual date): 24 hourly buckets
+  // If multi-day (7 días, mes actual, último mes): Daily trend buckets
+  const timelineChartData = React.useMemo(() => {
+    if (dateRange.isSingleDay) {
+      const hourlyDataMap: { [hour: number]: { label: string; ingresos: number; autos: number } } = {};
+      for (let h = 0; h < 24; h++) {
+        hourlyDataMap[h] = {
+          label: `${h.toString().padStart(2, '0')}:00`,
+          ingresos: 0,
+          autos: 0
+        };
       }
-    }
-    // If exited today, add to revenue for that exit hour
-    if (r.status === 'COMPLETED' && r.exitTime && r.exitTime >= startOfTodayMs) {
-      const exitHour = new Date(r.exitTime).getHours();
-      if (exitHour >= 0 && exitHour < 24) {
-        hourlyDataMap[exitHour].ingresos += r.amountPaid || 0;
-      }
-    }
-  });
 
-  // Convert map to sorted array, filter hours with some activity to keep graph readable (or show last 12 hours)
-  const hourlyChartData = Object.values(hourlyDataMap);
+      records.forEach(r => {
+        if (r.entryTime && r.entryTime >= dateRange.start && r.entryTime <= dateRange.end) {
+          const entryHour = new Date(r.entryTime).getHours();
+          if (entryHour >= 0 && entryHour < 24) {
+            hourlyDataMap[entryHour].autos += 1;
+          }
+        }
+        if (r.status === 'COMPLETED' && r.exitTime && r.exitTime >= dateRange.start && r.exitTime <= dateRange.end) {
+          const exitHour = new Date(r.exitTime).getHours();
+          if (exitHour >= 0 && exitHour < 24) {
+            hourlyDataMap[exitHour].ingresos += (r.amountPaid || 0);
+          }
+        }
+      });
+
+      return Object.values(hourlyDataMap);
+    } else {
+      // Build daily buckets from dateRange.start to dateRange.end
+      const dailyBuckets: { [dayKey: string]: { label: string; ingresos: number; autos: number; timestamp: number } } = {};
+      const cur = new Date(dateRange.start);
+      while (cur.getTime() <= dateRange.end) {
+        const key = `${cur.getFullYear()}-${cur.getMonth() + 1}-${cur.getDate()}`;
+        const dayLabel = cur.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' });
+        dailyBuckets[key] = {
+          label: dayLabel,
+          ingresos: 0,
+          autos: 0,
+          timestamp: cur.getTime()
+        };
+        cur.setDate(cur.getDate() + 1);
+      }
+
+      records.forEach(r => {
+        if (r.entryTime && r.entryTime >= dateRange.start && r.entryTime <= dateRange.end) {
+          const d = new Date(r.entryTime);
+          const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+          if (dailyBuckets[key]) {
+            dailyBuckets[key].autos += 1;
+          }
+        }
+        if (r.status === 'COMPLETED' && r.exitTime && r.exitTime >= dateRange.start && r.exitTime <= dateRange.end) {
+          const d = new Date(r.exitTime);
+          const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+          if (dailyBuckets[key]) {
+            dailyBuckets[key].ingresos += (r.amountPaid || 0);
+          }
+        }
+      });
+
+      return Object.values(dailyBuckets);
+    }
+  }, [dateRange, records]);
 
   if (loading) {
     return (
@@ -376,6 +418,60 @@ export default function DashboardView() {
         <DemoSeeder />
       )}
 
+      {/* Selector de Período de Ingresos y Métricas */}
+      <div className="bg-slate-800/80 border border-slate-700/60 rounded-2xl p-4 shadow-xl flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-blue-500/10 border border-blue-500/20 text-blue-400 rounded-xl">
+            <Calendar size={18} />
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-white">Filtrar Ingresos y Actividad</h3>
+            <p className="text-xs text-slate-400">
+              Período actual: <span className="text-blue-400 font-semibold">{dateRange.label}</span>
+            </p>
+          </div>
+        </div>
+
+        {/* Buttons */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {[
+            { id: 'HOY', label: 'Hoy' },
+            { id: 'AYER', label: 'Ayer' },
+            { id: '7_DIAS', label: 'Últimos 7 días' },
+            { id: 'MES_ACTUAL', label: 'Mes actual' },
+            { id: 'ULTIMO_MES', label: 'Último mes' },
+            { id: 'FECHA', label: 'Por fecha' },
+          ].map((btn) => {
+            const isActive = dateFilterMode === btn.id;
+            return (
+              <button
+                key={btn.id}
+                onClick={() => setDateFilterMode(btn.id as DateFilterMode)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                  isActive
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20 border border-blue-400/40'
+                    : 'bg-slate-900/60 text-slate-300 hover:text-white hover:bg-slate-700/50 border border-slate-700/50'
+                }`}
+              >
+                {btn.label}
+              </button>
+            );
+          })}
+
+          {dateFilterMode === 'FECHA' && (
+            <div className="flex items-center gap-2 bg-slate-900 px-3 py-1.5 rounded-xl border border-blue-500/40 animate-fade-in">
+              <Calendar size={13} className="text-blue-400 shrink-0" />
+              <input
+                type="date"
+                value={customDate}
+                onChange={(e) => setCustomDate(e.target.value)}
+                className="bg-transparent border-none text-white text-xs font-bold focus:outline-none cursor-pointer"
+              />
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* KPI 1: Active Vehicles */}
@@ -393,14 +489,18 @@ export default function DashboardView() {
           </div>
         </div>
 
-        {/* KPI 2: Today's Revenue */}
+        {/* KPI 2: Revenue in period */}
         <div className="bg-slate-800/60 border border-slate-700/50 rounded-2xl p-6 shadow-xl relative overflow-hidden group hover:border-emerald-500/30 transition-all duration-300">
           <div className="absolute top-0 right-0 p-8 bg-emerald-500/5 rounded-full translate-x-1/4 -translate-y-1/4 group-hover:scale-110 transition-transform" />
           <div className="flex items-start justify-between">
             <div className="space-y-2 w-full pr-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block">
-                  {revenueMode === 'REAL' ? 'Ingresos Reales (Hoy)' : revenueMode === 'FISICO' ? 'Efectivo Entregado (Hoy)' : 'Boletos en Sistema (Hoy)'}
+                  {revenueMode === 'REAL' 
+                    ? `Ingresos Reales (${dateRange.shortLabel})` 
+                    : revenueMode === 'FISICO' 
+                      ? `Efectivo Entregado (${dateRange.shortLabel})` 
+                      : `Boletos en Sistema (${dateRange.shortLabel})`}
                 </span>
               </div>
               <h3 className={`text-3xl font-extrabold ${revenueMode === 'REAL' ? 'text-emerald-400' : revenueMode === 'FISICO' ? 'text-blue-400' : 'text-slate-200'}`}>
@@ -438,7 +538,7 @@ export default function DashboardView() {
                       ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm' 
                       : 'bg-slate-900/60 text-slate-400 hover:text-white border border-slate-700/40'
                   }`}
-                  title="Suma bruta de boletos completados hoy (sin ajustes)"
+                  title="Suma bruta de boletos completados en el período"
                 >
                   Teórico Boletos
                 </button>
@@ -460,7 +560,7 @@ export default function DashboardView() {
                 </div>
               ) : (
                 <p className="text-[11px] text-slate-400 font-medium pt-1">
-                  Suma de <span className="font-bold text-slate-300">{completedToday.length}</span> tickets pagados hoy
+                  Suma de <span className="font-bold text-slate-300">{completedInPeriod.length}</span> tickets pagados en este período
                 </p>
               )}
             </div>
@@ -488,12 +588,20 @@ export default function DashboardView() {
 
       {/* Main Charts Section */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Line Chart: Hourly Activity */}
+        {/* Timeline Chart: Hourly or Daily Activity */}
         <div className="bg-slate-800/50 border border-slate-700/40 rounded-2xl p-6 shadow-xl lg:col-span-2">
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
             <div>
-              <h4 className="font-bold text-white text-md">Flujo e Ingresos por Hora (Hoy)</h4>
-              <p className="text-xs text-slate-400 mt-1">Gráfico acumulado de ingresos y afluencia por franja horaria</p>
+              <h4 className="font-bold text-white text-md">
+                {dateRange.isSingleDay 
+                  ? `Flujo e Ingresos por Hora (${dateRange.label})` 
+                  : `Tendencia de Ingresos y Flujo Diario (${dateRange.label})`}
+              </h4>
+              <p className="text-xs text-slate-400 mt-1">
+                {dateRange.isSingleDay 
+                  ? 'Entradas de vehículos y cobro registrado hora por hora' 
+                  : 'Comportamiento diario de recaudación y entradas en el período seleccionado'}
+              </p>
             </div>
             <div className="flex items-center gap-4 text-xs">
               <span className="flex items-center gap-1 text-blue-400 font-medium">
@@ -502,14 +610,14 @@ export default function DashboardView() {
               </span>
               <span className="flex items-center gap-1 text-emerald-400 font-medium">
                 <span className="w-2.5 h-2.5 bg-emerald-500 rounded-sm" />
-                Autos Entrados
+                {dateRange.isSingleDay ? 'Autos Entrados' : 'Autos Totales'}
               </span>
             </div>
           </div>
 
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={hourlyChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+              <AreaChart data={timelineChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                 <defs>
                   <linearGradient id="colorIngresos" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2}/>
@@ -522,7 +630,7 @@ export default function DashboardView() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.3} />
                 <XAxis 
-                  dataKey="hourLabel" 
+                  dataKey="label" 
                   stroke="#64748b" 
                   fontSize={11}
                   tickLine={false}
@@ -559,7 +667,7 @@ export default function DashboardView() {
                   strokeWidth={2}
                   fillOpacity={1} 
                   fill="url(#colorAutos)" 
-                  name="Autos Entrados"
+                  name={dateRange.isSingleDay ? "Autos Entrados" : "Autos Totales"}
                 />
               </AreaChart>
             </ResponsiveContainer>
@@ -634,8 +742,8 @@ export default function DashboardView() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Payment Methods Breakdown */}
         <div className="bg-slate-800/50 border border-slate-700/40 rounded-2xl p-6 shadow-xl">
-          <h4 className="font-bold text-white text-md mb-2">Métodos de Pago Utilizados (Hoy)</h4>
-          <p className="text-xs text-slate-400 mb-6">Preferencia de Efectivo vs. Tarjeta en ingresos de hoy</p>
+          <h4 className="font-bold text-white text-md mb-2">Métodos de Pago Utilizados ({dateRange.label})</h4>
+          <p className="text-xs text-slate-400 mb-6">Preferencia de Efectivo vs. Tarjeta en ingresos del período</p>
 
           <div className="h-52 my-4">
             {cashCount + cardCount > 0 ? (
@@ -775,9 +883,9 @@ export default function DashboardView() {
                 <div className="bg-slate-800/60 border border-slate-700/50 p-4 rounded-xl">
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Boletos en Sistema</span>
                   <span className="text-xl font-extrabold text-slate-200 mt-1 block">
-                    ${theoreticalEarningsToday.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                    ${theoreticalEarningsInPeriod.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
                   </span>
-                  <span className="text-[10px] text-slate-400">{completedToday.length} boletos cobrados</span>
+                  <span className="text-[10px] text-slate-400">{completedInPeriod.length} boletos cobrados</span>
                 </div>
 
                 <div className="bg-red-500/10 border border-red-500/30 p-4 rounded-xl">
@@ -791,7 +899,7 @@ export default function DashboardView() {
                 <div className="bg-emerald-500/10 border border-emerald-500/30 p-4 rounded-xl">
                   <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider block">Ingreso Real en Caja</span>
                   <span className="text-xl font-extrabold text-emerald-400 mt-1 block">
-                    ${realEarningsToday.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                    ${realEarningsInPeriod.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
                   </span>
                   <span className="text-[10px] text-emerald-300">Total neto recaudado</span>
                 </div>
@@ -805,12 +913,12 @@ export default function DashboardView() {
                 </p>
               </div>
 
-              {/* Table of today's cuts */}
+              {/* Table of period's cuts */}
               <div>
                 <h4 className="text-sm font-bold text-slate-200 mb-3 flex items-center justify-between">
-                  <span>Cortes Registrados Hoy ({todayCuts.length})</span>
+                  <span>Cortes Registrados en el Período ({periodCuts.length})</span>
                 </h4>
-                {todayCuts.length > 0 ? (
+                {periodCuts.length > 0 ? (
                   <div className="border border-slate-800 rounded-xl overflow-hidden">
                     <table className="w-full text-left text-xs text-slate-300">
                       <thead className="bg-slate-800/80 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-700/50">
@@ -824,7 +932,7 @@ export default function DashboardView() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60">
-                        {todayCuts.map((s, idx) => {
+                        {periodCuts.map((s, idx) => {
                           const diff = s.difference !== null && s.difference !== undefined 
                             ? s.difference 
                             : ((s.actualAmount !== null && s.actualAmount !== undefined) ? (s.actualAmount - (s.expectedAmount || 0)) : 0);
