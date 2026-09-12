@@ -1,0 +1,8 @@
+{
+  "name": "Panel de Administración Plaza del Río",
+  "description": "Panel de administración web para el sistema de estacionamiento Plaza del Río, sincronizado en tiempo real con Firebase Firestore.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
