@@ -32,7 +32,10 @@ import {
   AlertTriangle,
   Building2,
   MessageSquare,
-  Car
+  Car,
+  ChevronDown,
+  ChevronUp,
+  Copy
 } from 'lucide-react';
 
 interface ExtendedShift extends UserShift {
@@ -55,6 +58,26 @@ export default function ShiftsView() {
   const [customDate, setCustomDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [selectedLot, setSelectedLot] = useState<number | 'TODOS'>('TODOS');
   const [hideDuplicates, setHideDuplicates] = useState(false);
+
+  // Mobile layout & density states: compact vs detailed
+  const [mobileViewMode, setMobileViewMode] = useState<'compact' | 'detailed'>('compact');
+  const [expandedShiftIds, setExpandedShiftIds] = useState<Record<string, boolean>>({});
+  const [copiedShiftId, setCopiedShiftId] = useState<string | null>(null);
+
+  const toggleExpandShift = (shiftId: string) => {
+    setExpandedShiftIds((prev) => ({
+      ...prev,
+      [shiftId]: !prev[shiftId],
+    }));
+  };
+
+  const copyShiftIdToClipboard = (shiftId: string) => {
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(shiftId);
+      setCopiedShiftId(shiftId);
+      setTimeout(() => setCopiedShiftId(null), 1800);
+    }
+  };
 
   // Modal / Form state for manual shift close or edit
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -370,52 +393,35 @@ export default function ShiftsView() {
         </div>
       )}
 
-      {/* PROMINENT ALERT BANNER: DETECTED DUPLICATE CUTS */}
+      {/* COMPACT ALERT BANNER: DETECTED DUPLICATE CUTS */}
       {activeDuplicatesGroups.length > 0 && (
-        <div className="p-4 md:p-5 bg-gradient-to-r from-amber-950/40 via-slate-900/60 to-slate-900/60 border border-amber-500/30 rounded-3xl shadow-xl">
-          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
-            <div className="flex items-start gap-3.5">
-              <div className="p-3 bg-amber-500/20 border border-amber-500/30 text-amber-400 rounded-2xl shrink-0 mt-0.5">
-                <AlertTriangle size={24} />
+        <div className="p-3 bg-gradient-to-r from-amber-950/40 to-slate-900/80 border border-amber-500/30 rounded-2xl shadow-md">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="p-2 bg-amber-500/20 border border-amber-500/30 text-amber-400 rounded-xl shrink-0">
+                <AlertTriangle size={18} />
               </div>
-              <div className="space-y-1">
+              <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <h3 className="text-base font-bold text-white">
-                    Re-emisión de Turno Detectada ({activeDuplicatesGroups.length} caso{activeDuplicatesGroups.length > 1 ? 's' : ''})
-                  </h3>
-                  <span className="bg-amber-500/20 text-amber-300 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md border border-amber-500/30">
+                  <span className="text-xs font-bold text-white">Re-emisión de Turno Detectada ({activeDuplicatesGroups.length} caso{activeDuplicatesGroups.length > 1 ? 's' : ''})</span>
+                  <span className="bg-amber-500/20 text-amber-300 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border border-amber-500/30">
                     Cálculo Protegido
                   </span>
                 </div>
-                <p className="text-xs text-slate-300 leading-relaxed max-w-3xl">
-                  {activeDuplicatesGroups.map((g) => {
-                    const supIds = g.superseded.map(s => s.shiftId).join(', ');
-                    const canId = g.canonical.shiftId;
-                    const username = g.canonical.username;
-                    return (
-                      <span key={canId} className="block mt-1">
-                        El corte <strong className="text-amber-300 font-mono">{supIds}</strong> fue re-emitido ~2 minutos después como <strong className="text-emerald-400 font-mono">{canId}</strong> por el cajero <strong className="text-white">@{username}</strong>
-                        {g.canonical.notes ? (
-                          <> para agregar la observación: <em className="text-blue-300">"{g.canonical.notes}"</em>.</>
-                        ) : '.'}
-                      </span>
-                    );
-                  })}
-                  <span className="block mt-1 text-slate-400">
-                    <strong className="text-emerald-400">¿Por qué sucedió?</strong> En terminal se generó un primer corte y poco después se volvió a emitir para asentar la nota aclaratoria. Para que no se duplique el dinero, el sistema calcula únicamente el corte vigente más completo y excluye el anterior.
-                  </span>
+                <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                  Se calcula el corte definitivo oficial y se excluyen duplicados para no duplicar dinero.
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0 self-end lg:self-center">
+            <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
               {activeDuplicatesGroups.map((group) => (
                 <button
                   key={group.canonical.shiftId}
                   onClick={() => setComparingGroup(group)}
-                  className="px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                  className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
                 >
-                  <Eye size={14} /> Comparar Cortes
+                  <Eye size={13} /> Comparar Cortes
                 </button>
               ))}
             </div>
@@ -423,30 +429,31 @@ export default function ShiftsView() {
         </div>
       )}
 
-      {/* Interactive Filters & Controls Panel */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-slate-800/40 p-4 rounded-2xl border border-slate-700/30">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-slate-400 text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5 mr-2">
-            <Filter size={14} className="text-blue-400" /> Filtrar por:
+      {/* Interactive Filters & Controls Panel (Mobile Compact + Horizontal Scroll) */}
+      <div className="bg-slate-850/90 p-3 sm:p-3.5 rounded-2xl border border-slate-700/50 space-y-2.5">
+        {/* Row 1: Date quick buttons with smooth horizontal scroll on mobile */}
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+          <span className="text-slate-400 text-[11px] font-bold uppercase tracking-wider flex items-center gap-1 mr-1 shrink-0">
+            <Filter size={12} className="text-blue-400" /> Periodo:
           </span>
           {[
             { id: 'HOY', label: 'Hoy' },
             { id: 'AYER', label: 'Ayer' },
-            { id: '7_DIAS', label: 'Últimos 7 días' },
-            { id: 'MES_ACTUAL', label: 'Mes actual' },
-            { id: 'ULTIMO_MES', label: 'Último mes' },
-            { id: 'FECHA', label: 'Por fecha' },
-            { id: 'TODOS', label: 'Ver todos' },
+            { id: '7_DIAS', label: '7 Días' },
+            { id: 'MES_ACTUAL', label: 'Mes Actual' },
+            { id: 'ULTIMO_MES', label: 'Último Mes' },
+            { id: 'FECHA', label: 'Por Fecha' },
+            { id: 'TODOS', label: 'Ver Todos' },
           ].map((btn) => {
             const isActive = filterMode === btn.id;
             return (
               <button
                 key={btn.id}
                 onClick={() => setFilterMode(btn.id as DateFilterMode | 'TODOS')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
                   isActive
-                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/10'
-                    : 'bg-slate-800 text-slate-400 hover:text-white border border-slate-700/60'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20'
+                    : 'bg-slate-900/90 text-slate-400 hover:text-white border border-slate-700/60'
                 }`}
               >
                 {btn.label}
@@ -455,56 +462,173 @@ export default function ShiftsView() {
           })}
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          {/* ParkingLot Filter */}
-          <div className="flex items-center gap-2 bg-slate-900/60 px-3 py-1.5 rounded-xl border border-slate-700/50">
-            <Building2 size={13} className="text-blue-400" />
-            <select
-              value={selectedLot}
-              onChange={(e) => setSelectedLot(e.target.value === 'TODOS' ? 'TODOS' : Number(e.target.value))}
-              className="bg-transparent text-xs text-white font-medium focus:outline-none cursor-pointer"
-            >
-              <option value="TODOS" className="bg-slate-800 text-white">Todos los Lotes</option>
-              {parkingLots.map((lot) => (
-                <option key={lot.id} value={lot.id} className="bg-slate-800 text-white">
-                  Lote #{lot.id}: {lot.name}
-                </option>
-              ))}
-            </select>
+        {/* Row 2: Lot filter, date picker if active, hide duplicates, and density toggle */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/80 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* ParkingLot Filter */}
+            <div className="flex items-center gap-1.5 bg-slate-900/90 px-2.5 py-1.5 rounded-xl border border-slate-700/60">
+              <Building2 size={13} className="text-blue-400 shrink-0" />
+              <select
+                value={selectedLot}
+                onChange={(e) => setSelectedLot(e.target.value === 'TODOS' ? 'TODOS' : Number(e.target.value))}
+                className="bg-transparent text-xs text-white font-medium focus:outline-none cursor-pointer"
+              >
+                <option value="TODOS" className="bg-slate-800 text-white">Todos los Lotes</option>
+                {parkingLots.map((lot) => (
+                  <option key={lot.id} value={lot.id} className="bg-slate-800 text-white">
+                    Lote #{lot.id}: {lot.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {filterMode === 'FECHA' && (
+              <div className="flex items-center gap-2 bg-slate-900/90 px-2.5 py-1.5 rounded-xl border border-slate-700/60 animate-fade-in">
+                <Calendar size={13} className="text-blue-400 shrink-0" />
+                <input
+                  type="date"
+                  value={customDate}
+                  onChange={(e) => setCustomDate(e.target.value)}
+                  className="bg-transparent border-none text-white text-xs font-bold focus:outline-none cursor-pointer"
+                />
+              </div>
+            )}
+
+            {duplicatesInFilter.length > 0 && (
+              <button
+                onClick={() => setHideDuplicates(!hideDuplicates)}
+                className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 border transition-all cursor-pointer ${
+                  hideDuplicates 
+                    ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' 
+                    : 'bg-slate-900/90 text-slate-400 border-slate-700/60 hover:text-white'
+                }`}
+                title="Ocultar cortes anteriores que fueron re-emitidos"
+              >
+                {hideDuplicates ? <EyeOff size={12} /> : <Eye size={12} />}
+                <span className="hidden sm:inline">{hideDuplicates ? 'Ocultando Re-emitidos' : 'Mostrar Re-emitidos'}</span>
+                <span className="sm:hidden">{hideDuplicates ? 'Ocultando' : 'Mostrar Todos'}</span>
+              </button>
+            )}
           </div>
 
-          {filterMode === 'FECHA' && (
-            <div className="flex items-center gap-2.5 bg-slate-900/60 p-2 rounded-xl border border-slate-700/50 animate-fade-in">
-              <Calendar size={14} className="text-blue-400" />
-              <input
-                type="date"
-                value={customDate}
-                onChange={(e) => setCustomDate(e.target.value)}
-                className="bg-transparent border-none text-white text-xs font-bold focus:outline-none cursor-pointer"
-              />
-            </div>
-          )}
-
-          {/* Hide duplicates toggle */}
-          {duplicatesInFilter.length > 0 && (
+          {/* Density toggle for mobile: Compacto vs Detallado */}
+          <div className="lg:hidden flex items-center gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-700/60">
             <button
-              onClick={() => setHideDuplicates(!hideDuplicates)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 border transition-all cursor-pointer ${
-                hideDuplicates 
-                  ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' 
-                  : 'bg-slate-900/60 text-slate-400 border-slate-700/50 hover:text-white'
+              onClick={() => setMobileViewMode('compact')}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                mobileViewMode === 'compact'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-white'
               }`}
-              title="Ocultar cortes anteriores que fueron re-emitidos"
             >
-              {hideDuplicates ? <EyeOff size={13} /> : <Eye size={13} />}
-              {hideDuplicates ? 'Ocultando Duplicados' : 'Mostrar Todos (Inc. Duplicados)'}
+              Compacto
             </button>
-          )}
+            <button
+              onClick={() => setMobileViewMode('detailed')}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                mobileViewMode === 'detailed'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Detallado
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Metrics Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5">
+      {/* MOBILE COMPACT SUMMARY (< lg): High-Density Executive Ribbon */}
+      <div className="lg:hidden bg-slate-850/90 border border-slate-700/60 rounded-2xl p-3 shadow-lg space-y-2">
+        <div className="flex items-center justify-between text-xs pb-1.5 border-b border-slate-750">
+          <div className="flex items-center gap-1.5">
+            <History size={13} className="text-blue-400" />
+            <span className="font-bold text-white text-xs">{totalCutsCount} Turnos Registrados</span>
+            {duplicatesInFilter.length > 0 && (
+              <span className="text-[10px] font-bold text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                +{duplicatesInFilter.length} re-emitido
+              </span>
+            )}
+          </div>
+          <span className="text-[10px] text-slate-400 font-medium">Auditoría Ejecutiva</span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {/* 1. Autos Cobrados */}
+          <div className="bg-slate-900/90 border border-slate-800/80 rounded-xl p-2.5 flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider">Autos Cobrados</span>
+              <Car size={13} className="text-cyan-400" />
+            </div>
+            <div className="mt-1 flex items-baseline justify-between">
+              <span className="text-lg font-black text-white">{totalCarsProcessed}</span>
+              <span className="text-xs font-mono font-bold text-cyan-300">${totalCarsAmountPaid.toFixed(2)}</span>
+            </div>
+            <span className="text-[9px] text-slate-400 mt-0.5">En boletos de turno</span>
+          </div>
+
+          {/* 2. Debió Entregar (Esperado) */}
+          <div className="bg-slate-900/90 border border-slate-800/80 rounded-xl p-2.5 flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Debió Entregar</span>
+              <DollarSign size={13} className="text-slate-400" />
+            </div>
+            <div className="mt-1 flex items-baseline justify-between">
+              <span className="text-lg font-black text-slate-100">${totalExpectedAmount.toFixed(2)}</span>
+            </div>
+            <span className="text-[9px] text-slate-400 mt-0.5">Calculado por sistema</span>
+          </div>
+
+          {/* 3. Entregó al Final (Físico) */}
+          <div className="bg-slate-900/90 border border-slate-800/80 rounded-xl p-2.5 flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Entregó Final</span>
+              <CheckCircle size={13} className="text-emerald-400" />
+            </div>
+            <div className="mt-1 flex items-baseline justify-between">
+              <span className="text-lg font-black text-emerald-400">${totalActualAmount.toFixed(2)}</span>
+            </div>
+            <span className="text-[9px] text-emerald-500/80 mt-0.5">Efectivo físico entregado</span>
+          </div>
+
+          {/* 4. Diferencia de Cuadre */}
+          <div className={`rounded-xl p-2.5 border flex flex-col justify-between ${
+            totalDifferenceAmount === 0 
+              ? 'bg-slate-900/90 border-slate-800/80' 
+              : totalDifferenceAmount < 0 
+                ? 'bg-red-950/25 border-red-500/40' 
+                : 'bg-amber-950/20 border-amber-500/40'
+          }`}>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Diferencia</span>
+              <TrendingDown size={13} className={totalDifferenceAmount === 0 ? 'text-slate-400' : totalDifferenceAmount < 0 ? 'text-red-400' : 'text-amber-400'} />
+            </div>
+            <div className="mt-1 flex items-baseline justify-between font-mono">
+              <span className={`text-lg font-black ${
+                totalDifferenceAmount === 0 
+                  ? 'text-emerald-400' 
+                  : totalDifferenceAmount < 0 
+                    ? 'text-red-400' 
+                    : 'text-amber-400'
+              }`}>
+                {totalDifferenceAmount === 0 
+                  ? '$0.00' 
+                  : totalDifferenceAmount > 0 
+                    ? `+$${totalDifferenceAmount.toFixed(2)}` 
+                    : `-$${Math.abs(totalDifferenceAmount).toFixed(2)}`}
+              </span>
+              <span className={`text-[10px] font-bold uppercase ${
+                totalDifferenceAmount === 0 ? 'text-emerald-400' : totalDifferenceAmount < 0 ? 'text-red-400' : 'text-amber-400'
+              }`}>
+                {totalDifferenceAmount === 0 ? '✓ Cuadra' : totalDifferenceAmount < 0 ? 'Faltante' : 'Sobrante'}
+              </span>
+            </div>
+            <span className="text-[9px] text-slate-400 mt-0.5">Físico vs Esperado</span>
+          </div>
+        </div>
+      </div>
+
+      {/* DESKTOP METRICS SUMMARY CARDS (>= lg) */}
+      <div className="hidden lg:grid lg:grid-cols-5 gap-3.5">
         {/* Card 1: Total Cortes */}
         <div className="bg-slate-850 border border-slate-700/40 rounded-2xl p-4 flex flex-col justify-between shadow-lg">
           <div className="flex items-center justify-between">
@@ -601,8 +725,8 @@ export default function ShiftsView() {
           </div>
         ) : filteredShifts.length > 0 ? (
           <>
-            {/* MOBILE VIEW: Dedicated mobile audit cards (< lg) */}
-            <div className="lg:hidden p-3 sm:p-4 space-y-4">
+            {/* MOBILE VIEW: Compact & Professional Audit Cards (< lg) */}
+            <div className="lg:hidden p-2 sm:p-3 space-y-2.5">
               {filteredShifts.map((shift) => {
                 const startDate = new Date(shift.startTime);
                 const endDate = shift.endTime ? new Date(shift.endTime) : null;
@@ -618,166 +742,105 @@ export default function ShiftsView() {
                 const durationHours = Math.floor(durationMs / (1000 * 60 * 60));
                 const durationMinutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
 
+                const isExpanded = mobileViewMode === 'detailed' || !!expandedShiftIds[shift.shiftId];
+
                 return (
                   <div
                     key={shift.shiftId}
-                    className={`rounded-2xl p-4 transition-all border shadow-lg space-y-3.5 ${
+                    className={`rounded-2xl transition-all border shadow-sm overflow-hidden ${
                       isSuperseded
                         ? 'bg-amber-950/20 border-amber-500/40'
                         : isCanonical
-                          ? 'bg-slate-850 border-emerald-500/40 ring-1 ring-emerald-500/20'
-                          : 'bg-slate-850 border-slate-700/60'
+                          ? 'bg-slate-850 border-emerald-500/40'
+                          : 'bg-slate-850 border-slate-750 hover:border-slate-600'
                     }`}
                   >
-                    {/* Card Header: IDs, Lote & Status */}
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="font-mono font-black text-sm text-blue-400">
-                          {shift.shiftId}
-                        </span>
-                        {shift.sourceCollection === 'cash_cuts' ? (
-                          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                            Corte Android
-                          </span>
-                        ) : (
-                          <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400 bg-blue-400/10 px-2 py-0.5 rounded border border-blue-500/20">
-                            Turno Web
-                          </span>
-                        )}
-                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-300 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-700/60">
-                          <Building2 size={11} className="text-blue-400" />
-                          Lote #{lotId}: {getLotName(lotId)}
-                        </span>
-                      </div>
-
-                      {/* Status badge */}
-                      <div className="shrink-0">
-                        {isSuperseded ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-300 bg-amber-500/20 px-2.5 py-1 rounded-full border border-amber-500/30">
-                            <AlertTriangle size={11} /> Re-emitido
-                          </span>
-                        ) : shift.isClosed ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-300 bg-slate-800 px-2.5 py-1 rounded-full border border-slate-700">
-                            <CheckCircle size={11} className="text-emerald-400" /> Cerrado
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-300 bg-amber-500/20 px-2.5 py-1 rounded-full border border-amber-500/30 animate-pulse">
-                            <Clock size={11} /> En curso
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Cashier & Timestamps Row */}
-                    <div className="flex items-center justify-between gap-3 pt-1 border-t border-slate-800">
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-8 h-8 rounded-xl bg-blue-600/20 border border-blue-500/30 text-blue-300 flex items-center justify-center font-bold text-xs uppercase shadow-sm">
+                    {/* Header Row: Cashier, Folio, Lot & Status */}
+                    <div className="px-3 py-2 bg-slate-900/60 border-b border-slate-800/80 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {/* Cashier Avatar & Name */}
+                        <div className="w-6 h-6 rounded-lg bg-blue-600/25 border border-blue-500/30 text-blue-300 flex items-center justify-center font-black text-[10px] uppercase shrink-0">
                           {shift.username.slice(0, 2)}
                         </div>
-                        <div>
-                          <span className="text-xs font-bold text-white block">@{shift.username}</span>
-                          <span className="text-[10px] text-slate-400">Duración: {durationHours}h {durationMinutes}m</span>
-                        </div>
+                        <span className="font-bold text-white text-xs truncate max-w-[90px] sm:max-w-[130px]">
+                          @{shift.username}
+                        </span>
+
+                        {/* Shift ID with Copy Action */}
+                        <button
+                          onClick={() => copyShiftIdToClipboard(shift.shiftId)}
+                          className="font-mono text-[11px] font-bold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 px-1.5 py-0.5 rounded border border-blue-500/20 transition-colors flex items-center gap-1 cursor-pointer shrink-0"
+                          title="Copiar folio"
+                        >
+                          <span>{shift.shiftId}</span>
+                          {copiedShiftId === shift.shiftId ? (
+                            <Check size={10} className="text-emerald-400" />
+                          ) : (
+                            <Copy size={9} className="opacity-60" />
+                          )}
+                        </button>
+
+                        {/* Lot Badge */}
+                        <span className="text-[10px] font-bold text-slate-300 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700/80 shrink-0 hidden sm:inline-block">
+                          L#{lotId}
+                        </span>
                       </div>
 
-                      <div className="text-right text-[11px] text-slate-300 space-y-0.5">
-                        <div className="flex items-center justify-end gap-1 font-mono text-[10px]">
-                          <Clock size={10} className="text-emerald-400 shrink-0" />
-                          <span>
-                            {startDate.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })} {startDate.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
+                      {/* Status Badge */}
+                      <div className="shrink-0 flex items-center gap-1">
+                        {isSuperseded ? (
+                          <span className="text-[10px] font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/30 flex items-center gap-1">
+                            <AlertTriangle size={10} /> Re-emitido
                           </span>
-                        </div>
-                        {endDate ? (
-                          <div className="flex items-center justify-end gap-1 font-mono text-[10px] text-slate-400">
-                            <CheckCircle size={10} className="text-slate-500 shrink-0" />
-                            <span>
-                              {endDate.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })} {endDate.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                          </div>
+                        ) : shift.isClosed ? (
+                          <span className="text-[10px] font-bold text-slate-300 bg-slate-800 px-2 py-0.5 rounded-full border border-slate-700 flex items-center gap-1">
+                            <CheckCircle size={10} className="text-emerald-400" /> Cerrado
+                          </span>
                         ) : (
-                          <span className="text-amber-400 font-semibold italic text-[10px]">Turno abierto</span>
+                          <span className="text-[10px] font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/30 flex items-center gap-1 animate-pulse">
+                            <Clock size={10} /> En curso
+                          </span>
                         )}
                       </div>
                     </div>
 
-                    {/* 4-Metric Grid for Mobile: Autos Cobrados, Debió Entregar, Entregó al Final, Diferencia */}
-                    <div className="grid grid-cols-2 gap-2.5 pt-1">
-                      {/* 1. Autos Cobrados */}
-                      <div className="bg-slate-900/90 border border-slate-700/60 rounded-xl p-3 flex flex-col justify-between">
-                        <span className="text-[10px] font-bold text-cyan-300 uppercase tracking-wider flex items-center gap-1">
-                          <Car size={12} /> Autos Cobrados
-                        </span>
-                        <div className="my-1.5">
-                          <span className="text-lg font-black text-white block">
-                            {rec?.carsCount || 0} autos
+                    {/* Card Body: Ultra-Compact High-Density Metrics Capsule */}
+                    <div className="p-2.5 sm:p-3 space-y-2">
+                      {/* 4-Metric Grid */}
+                      <div className="grid grid-cols-4 divide-x divide-slate-800 bg-slate-950/70 rounded-xl py-1.5 px-1 border border-slate-800 text-center">
+                        {/* 1. Autos Cobrados */}
+                        <div className="px-1 flex flex-col justify-center">
+                          <span className="text-[9px] font-bold text-cyan-400 block uppercase tracking-wider">Autos</span>
+                          <span className="text-sm font-black text-white block mt-0.5">
+                            {rec?.carsCount || 0}
                           </span>
-                          <span className="text-[11px] font-mono font-bold text-cyan-400">
-                            ${(rec?.totalChargedInCars || 0).toFixed(2)} en boletos
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => setSelectedShiftForTickets(shift)}
-                          className="mt-1 w-full py-1.5 px-2 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold flex items-center justify-center gap-1 transition-colors active:scale-98 cursor-pointer"
-                        >
-                          <Eye size={11} /> Ver {rec?.carsCount || 0} boletos
-                        </button>
-                      </div>
-
-                      {/* 2. Debió Entregar (Esperado) */}
-                      <div className="bg-slate-900/90 border border-slate-700/60 rounded-xl p-3 flex flex-col justify-between">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">
-                          <DollarSign size={12} /> Debió Entregar
-                        </span>
-                        <div className="my-1.5">
-                          <span className="text-lg font-black text-slate-100 block">
-                            ${(shift.expectedAmount || 0).toFixed(2)}
-                          </span>
-                          {rec && rec.carsCount > 0 ? (
-                            rec.matchesExpected ? (
-                              <span className="text-[10px] text-emerald-400 font-semibold block">✓ Cuadra con autos</span>
-                            ) : rec.differenceToExpected > 0 ? (
-                              <span className="text-[10px] text-blue-300 font-semibold block">+${rec.differenceToExpected.toFixed(2)} extra/fondo</span>
-                            ) : (
-                              <span className="text-[10px] text-amber-400 font-semibold block">-${Math.abs(rec.differenceToExpected).toFixed(2)} vs autos</span>
-                            )
-                          ) : (
-                            <span className="text-[10px] text-slate-400 block">Cálculo de sistema</span>
-                          )}
-                        </div>
-                        <span className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold">Esperado</span>
-                      </div>
-
-                      {/* 3. Entregó al Final (Físico) */}
-                      <div className="bg-slate-900/90 border border-slate-700/60 rounded-xl p-3 flex flex-col justify-between">
-                        <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1">
-                          <CheckCircle size={12} /> Entregó al Final
-                        </span>
-                        <div className="my-1.5">
-                          <span className="text-lg font-black text-emerald-400 block">
-                            {shift.actualAmount !== null ? `$${shift.actualAmount.toFixed(2)}` : 'Pendiente'}
-                          </span>
-                          <span className="text-[10px] text-slate-400 block">
-                            {shift.actualAmount !== null ? 'Efectivo en mano' : 'Sin arqueo'}
+                          <span className="text-[10px] font-mono font-bold text-cyan-300 block truncate">
+                            ${(rec?.totalChargedInCars || 0).toFixed(0)}
                           </span>
                         </div>
-                        <span className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold">Físico en caja</span>
-                      </div>
 
-                      {/* 4. Diferencia de Cuadre */}
-                      <div className={`border rounded-xl p-3 flex flex-col justify-between ${
-                        shift.difference === null
-                          ? 'bg-slate-900/90 border-slate-700/60'
-                          : shift.difference === 0
-                            ? 'bg-emerald-950/25 border-emerald-500/30'
-                            : isNegativeDiscrepancy
-                              ? 'bg-red-950/30 border-red-500/40'
-                              : 'bg-amber-950/25 border-amber-500/30'
-                      }`}>
-                        <span className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 text-slate-300">
-                          <TrendingDown size={12} /> Diferencia
-                        </span>
-                        <div className="my-1.5">
-                          <span className={`text-lg font-black block font-mono ${
+                        {/* 2. Debió Entregar (Esperado) */}
+                        <div className="px-1 flex flex-col justify-center">
+                          <span className="text-[9px] font-bold text-slate-400 block uppercase tracking-wider">Debió</span>
+                          <span className="text-sm font-bold text-slate-200 block mt-0.5 font-mono truncate">
+                            ${(shift.expectedAmount || 0).toFixed(0)}
+                          </span>
+                          <span className="text-[9px] text-slate-500 block truncate">Esperado</span>
+                        </div>
+
+                        {/* 3. Entregó al Final (Físico) */}
+                        <div className="px-1 flex flex-col justify-center">
+                          <span className="text-[9px] font-bold text-emerald-400 block uppercase tracking-wider">Entregó</span>
+                          <span className="text-sm font-bold text-emerald-400 block mt-0.5 font-mono truncate">
+                            {shift.actualAmount !== null ? `$${shift.actualAmount.toFixed(0)}` : '-'}
+                          </span>
+                          <span className="text-[9px] text-emerald-500/80 block truncate">Físico</span>
+                        </div>
+
+                        {/* 4. Diferencia */}
+                        <div className="px-1 flex flex-col justify-center">
+                          <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 block">Diferencia</span>
+                          <span className={`text-sm font-black font-mono block mt-0.5 truncate ${
                             shift.difference === null
                               ? 'text-slate-500'
                               : shift.difference === 0
@@ -789,12 +852,12 @@ export default function ShiftsView() {
                             {shift.difference === null
                               ? '-'
                               : shift.difference === 0
-                                ? '✓ $0.00'
+                                ? '$0'
                                 : shift.difference > 0
-                                  ? `+$${shift.difference.toFixed(2)}`
-                                  : `-$${Math.abs(shift.difference).toFixed(2)}`}
+                                  ? `+$${shift.difference.toFixed(0)}`
+                                  : `-$${Math.abs(shift.difference).toFixed(0)}`}
                           </span>
-                          <span className={`text-[10px] font-bold block ${
+                          <span className={`text-[9px] font-bold block truncate ${
                             shift.difference === null
                               ? 'text-slate-500'
                               : shift.difference === 0
@@ -806,68 +869,161 @@ export default function ShiftsView() {
                             {shift.difference === null
                               ? 'Sin arqueo'
                               : shift.difference === 0
-                                ? 'Cuadrado exacto'
+                                ? 'Cuadra'
                                 : isNegativeDiscrepancy
-                                  ? 'Faltante de caja'
-                                  : 'Sobrante en caja'}
+                                  ? 'Faltante'
+                                  : 'Sobrante'}
                           </span>
                         </div>
-                        <span className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold">Cuadre final</span>
                       </div>
-                    </div>
 
-                    {/* Observations / Notes */}
-                    {shift.notes && shift.notes.trim() ? (
-                      <div className="bg-slate-900/90 p-3 rounded-xl border border-slate-700/60 text-xs flex items-start gap-2.5">
-                        <MessageSquare size={15} className="text-blue-400 shrink-0 mt-0.5" />
-                        <div>
-                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Nota del Cajero:</span>
-                          <p className="text-slate-200 text-xs italic mt-0.5 leading-relaxed">{shift.notes}</p>
+                      {/* Info Sub-strip: Time Range, Duration, Origin, Lot */}
+                      <div className="flex items-center justify-between text-[11px] text-slate-400 px-1 pt-0.5">
+                        <div className="flex items-center gap-1.5 truncate">
+                          <Clock size={11} className="text-slate-500 shrink-0" />
+                          <span className="truncate">
+                            {startDate.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })} {startDate.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
+                            {' → '}
+                            {endDate ? endDate.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }) : 'En curso'}
+                          </span>
+                          <span className="text-slate-500 text-[10px] shrink-0">({durationHours}h {durationMinutes}m)</span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="sm:hidden text-[9px] font-bold text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700/80">
+                            L#{lotId}
+                          </span>
+                          {shift.sourceCollection === 'cash_cuts' ? (
+                            <span className="text-[9px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-400/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                              Android
+                            </span>
+                          ) : (
+                            <span className="text-[9px] font-bold uppercase tracking-wider text-blue-400 bg-blue-400/10 px-1.5 py-0.5 rounded border border-blue-500/20">
+                              Web
+                            </span>
+                          )}
                         </div>
                       </div>
-                    ) : null}
 
-                    {/* Mobile Action Buttons (minimum touch target height 44px) */}
-                    <div className="flex items-center gap-2 pt-1">
-                      <button
-                        onClick={() => setSelectedShiftForTickets(shift)}
-                        className="flex-1 min-h-[44px] px-3 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-blue-600/20 active:scale-98 transition-all cursor-pointer"
-                      >
-                        <Car size={16} />
-                        <span>Ver Boletos ({rec?.carsCount || 0} autos)</span>
-                      </button>
+                      {/* Cashier Notes (if present) */}
+                      {shift.notes && shift.notes.trim() ? (
+                        <div className="bg-slate-900/90 px-2.5 py-1.5 rounded-lg border border-slate-800 text-[11px] flex items-center gap-2">
+                          <MessageSquare size={12} className="text-blue-400 shrink-0" />
+                          <span className="text-slate-300 italic truncate">{shift.notes}</span>
+                        </div>
+                      ) : null}
 
-                      <button
-                        onClick={() => openEditModal(shift)}
-                        className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-700/80 hover:bg-slate-600 text-white font-semibold text-xs flex items-center justify-center gap-1.5 border border-slate-600/60 active:scale-98 transition-all cursor-pointer"
-                        title="Editar arqueo y observaciones"
-                      >
-                        <Edit3 size={15} />
-                        <span className="hidden sm:inline">Editar</span>
-                      </button>
-
-                      {isSuperseded && shift.supersededBy && (
-                        <button
-                          onClick={() => {
-                            const canonical = shifts.find(s => s.shiftId === shift.supersededBy);
-                            if (canonical) {
-                              setComparingGroup({ canonical, superseded: [shift] });
-                            }
-                          }}
-                          className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-semibold text-xs flex items-center justify-center gap-1 border border-amber-500/40 active:scale-98 transition-all cursor-pointer"
-                          title="Comparar con el corte vigente"
-                        >
-                          <Eye size={15} />
-                        </button>
+                      {/* Expandable detailed drawer */}
+                      {isExpanded && (
+                        <div className="pt-2 border-t border-slate-800 space-y-1.5 text-xs animate-fade-in">
+                          <div className="bg-slate-950/80 rounded-xl p-2.5 border border-slate-800/90 space-y-1.5">
+                            <div className="flex justify-between items-center text-[11px]">
+                              <span className="text-slate-400">Estacionamiento:</span>
+                              <span className="font-bold text-white">Lote #{lotId}: {getLotName(lotId)}</span>
+                            </div>
+                            <div className="flex justify-between items-center text-[11px]">
+                              <span className="text-slate-400">Total autos cobrados:</span>
+                              <span className="font-bold text-white">{rec?.carsCount || 0} vehículos</span>
+                            </div>
+                            <div className="flex justify-between items-center text-[11px]">
+                              <span className="text-slate-400">Total cobrado en boletos:</span>
+                              <span className="font-mono font-bold text-cyan-300">${(rec?.totalChargedInCars || 0).toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between items-center text-[11px]">
+                              <span className="text-slate-400">Debió entregar (sistema):</span>
+                              <span className="font-mono font-bold text-slate-200">${(shift.expectedAmount || 0).toFixed(2)}</span>
+                            </div>
+                            {rec && rec.carsCount > 0 && !rec.matchesExpected && (
+                              <div className="flex justify-between items-center text-[11px]">
+                                <span className="text-slate-400">Diferencia vs boletos:</span>
+                                <span className={rec.differenceToExpected > 0 ? 'text-blue-300 font-bold' : 'text-amber-400 font-bold'}>
+                                  {rec.differenceToExpected > 0 
+                                    ? `+$${rec.differenceToExpected.toFixed(2)} (fondo/extra)` 
+                                    : `-$${Math.abs(rec.differenceToExpected).toFixed(2)} (menor a boletos)`}
+                                </span>
+                              </div>
+                            )}
+                            <div className="flex justify-between items-center text-[11px]">
+                              <span className="text-slate-400">Efectivo físico entregado:</span>
+                              <span className="font-mono font-bold text-emerald-400">
+                                {shift.actualAmount !== null ? `$${shift.actualAmount.toFixed(2)}` : 'Sin arqueo'}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center text-[11px] pt-1 border-t border-slate-800">
+                              <span className="text-slate-400">Diferencia de cuadre:</span>
+                              <span className={`font-mono font-bold ${
+                                shift.difference === null 
+                                  ? 'text-slate-400' 
+                                  : shift.difference === 0 
+                                    ? 'text-emerald-400' 
+                                    : isNegativeDiscrepancy 
+                                      ? 'text-red-400' 
+                                      : 'text-amber-400'
+                              }`}>
+                                {shift.difference === null 
+                                  ? 'Pendiente' 
+                                  : shift.difference === 0 
+                                    ? '✓ $0.00 (Cuadrado)' 
+                                    : shift.difference > 0 
+                                      ? `+$${shift.difference.toFixed(2)} (Sobrante)` 
+                                      : `-$${Math.abs(shift.difference).toFixed(2)} (Faltante)`}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
                       )}
 
-                      <button
-                        onClick={() => handleDeleteShift(shift)}
-                        className="min-h-[44px] w-11 px-0 rounded-xl bg-red-600/15 hover:bg-red-600/25 text-red-400 flex items-center justify-center border border-red-500/30 active:scale-98 transition-all cursor-pointer"
-                        title="Eliminar registro"
-                      >
-                        <Trash2 size={16} />
-                      </button>
+                      {/* Card Action Bar (Sleek, Compact, Ergonomic) */}
+                      <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-slate-800/80">
+                        <button
+                          onClick={() => setSelectedShiftForTickets(shift)}
+                          className="flex-1 py-1.5 px-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm active:scale-98 transition-all cursor-pointer min-h-[36px]"
+                        >
+                          <Car size={14} />
+                          <span>Ver {rec?.carsCount || 0} Boletos</span>
+                        </button>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={() => toggleExpandShift(shift.shiftId)}
+                            className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center border border-slate-700 transition-all cursor-pointer"
+                            title={isExpanded ? 'Contraer detalles' : 'Expandir detalles'}
+                          >
+                            {isExpanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                          </button>
+
+                          <button
+                            onClick={() => openEditModal(shift)}
+                            className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center border border-slate-700 transition-all cursor-pointer"
+                            title="Editar arqueo y notas"
+                          >
+                            <Edit3 size={14} />
+                          </button>
+
+                          {isSuperseded && shift.supersededBy && (
+                            <button
+                              onClick={() => {
+                                const canonical = shifts.find(s => s.shiftId === shift.supersededBy);
+                                if (canonical) {
+                                  setComparingGroup({ canonical, superseded: [shift] });
+                                }
+                              }}
+                              className="w-9 h-9 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 flex items-center justify-center border border-amber-500/40 transition-all cursor-pointer"
+                              title="Comparar re-emisión"
+                            >
+                              <Eye size={14} />
+                            </button>
+                          )}
+
+                          <button
+                            onClick={() => handleDeleteShift(shift)}
+                            className="w-9 h-9 rounded-xl bg-red-600/15 hover:bg-red-600/25 text-red-400 flex items-center justify-center border border-red-500/30 transition-all cursor-pointer"
+                            title="Eliminar corte"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 );
