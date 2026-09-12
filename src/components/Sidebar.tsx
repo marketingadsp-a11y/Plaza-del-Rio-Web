@@ -13,10 +13,12 @@ import {
   X,
   User as UserIcon,
   ShieldAlert,
-  BarChart3
+  BarChart3,
+  Sliders
 } from 'lucide-react';
 import { User } from '../types';
 import { getPreferredDbId, setPreferredDbId } from '../lib/firebase';
+import { useAppLogo } from '../lib/appConfig';
 
 interface SidebarProps {
   activeTab: string;
@@ -26,6 +28,7 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ activeTab, onTabChange, currentUser, onLogout }: SidebarProps) {
+  const { logoUrl, defaultLogo } = useAppLogo();
   const [isOpen, setIsOpen] = useState(false);
   const [dbId, setDbId] = useState(getPreferredDbId());
   const [isEditingDb, setIsEditingDb] = useState(false);
@@ -37,7 +40,7 @@ export default function Sidebar({ activeTab, onTabChange, currentUser, onLogout 
     { id: 'users', label: 'Cajeros y Usuarios', icon: Users },
     { id: 'shifts', label: 'Turnos y Cortes', icon: History },
     { id: 'prepaid', label: 'Pensionados / Mensuales', icon: CreditCard },
-    { id: 'config', label: 'Configuración de Ticket', icon: Printer },
+    { id: 'config', label: 'Configuración y Logotipo', icon: Sliders },
     { id: 'reports', label: 'Reportes y Descargas', icon: BarChart3 },
   ];
 
@@ -50,14 +53,22 @@ export default function Sidebar({ activeTab, onTabChange, currentUser, onLogout 
     window.location.reload();
   };
 
+  const effectiveLogo = logoUrl || defaultLogo;
+
   return (
     <>
       {/* Mobile Header */}
-      <header className="lg:hidden flex items-center justify-between bg-slate-900 border-b border-slate-800 text-white px-5 py-4 sticky top-0 z-40">
+      <header className="lg:hidden flex items-center justify-between bg-slate-900 border-b border-slate-800 text-white px-5 py-4 sticky top-0 z-40 shadow-md">
         <div className="flex items-center gap-2.5">
-          <img src="/logo-plaza-1.jpg" alt="Logo" className="w-9 h-9 rounded-lg object-cover border border-slate-700 shadow-md" onError={(e) => {
-            e.currentTarget.style.display = 'none';
-          }} />
+          <img 
+            src={effectiveLogo} 
+            alt="Logo" 
+            className="w-9 h-9 rounded-lg object-contain bg-slate-800 border border-slate-700 shadow-md p-0.5" 
+            referrerPolicy="no-referrer"
+            onError={(e) => {
+              e.currentTarget.src = defaultLogo;
+            }} 
+          />
           <span className="font-bold tracking-tight text-md">Plaza del Río</span>
         </div>
         <button
@@ -84,9 +95,15 @@ export default function Sidebar({ activeTab, onTabChange, currentUser, onLogout 
         {/* Brand Banner */}
         <div className="p-6 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <img src="/logo-plaza-1.jpg" alt="Logo" className="w-11 h-11 rounded-xl object-cover border border-slate-700 shadow-md" onError={(e) => {
-              e.currentTarget.style.display = 'none';
-            }} />
+            <img 
+              src={effectiveLogo} 
+              alt="Logo" 
+              className="w-11 h-11 rounded-xl object-contain bg-slate-800 border border-slate-700 shadow-md p-1" 
+              referrerPolicy="no-referrer"
+              onError={(e) => {
+                e.currentTarget.src = defaultLogo;
+              }} 
+            />
             <div>
               <h2 className="font-extrabold text-white text-lg tracking-tight">Plaza del Río</h2>
               <span className="text-xs text-blue-400 font-medium tracking-wider uppercase">Parking Admin</span>

@@ -3,12 +3,14 @@ import { getDoc, doc, setDoc, collection, getDocs, limit, query } from 'firebase
 import { getDb, sha256, getPreferredDbId } from '../lib/firebase';
 import { Shield, Lock, User as UserIcon, AlertCircle, Database, HelpCircle, Check, Loader2 } from 'lucide-react';
 import { User } from '../types';
+import { useAppLogo } from '../lib/appConfig';
 
 interface LoginProps {
   onLoginSuccess: (user: User) => void;
 }
 
 export default function Login({ onLoginSuccess }: LoginProps) {
+  const { logoUrl, defaultLogo } = useAppLogo();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -153,10 +155,15 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         {/* Brand Header */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center mb-4">
-            <img src="/logo-plaza-1.jpg" alt="Logo Plaza del Río" className="w-20 h-20 rounded-3xl object-cover shadow-2xl border-2 border-slate-700/60" onError={(e) => {
-              // fallback if logo is missing or empty
-              e.currentTarget.style.display = 'none';
-            }} />
+            <img 
+              src={logoUrl || defaultLogo} 
+              alt="Logo Plaza del Río" 
+              className="w-20 h-20 rounded-3xl object-contain bg-slate-800 p-1.5 shadow-2xl border-2 border-slate-700/60" 
+              referrerPolicy="no-referrer"
+              onError={(e) => {
+                e.currentTarget.src = defaultLogo;
+              }} 
+            />
           </div>
           <h1 className="text-3xl font-extrabold text-white tracking-tight">Plaza del Río</h1>
           <p className="text-slate-400 mt-2 font-medium">Panel de Control de Estacionamiento</p>

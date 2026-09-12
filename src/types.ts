@@ -68,4 +68,5 @@ export interface TicketConfig {
   showLogo: boolean;
   showTerms: boolean;
   exitShowFolio: boolean;
+  logoUrl?: string;
 }

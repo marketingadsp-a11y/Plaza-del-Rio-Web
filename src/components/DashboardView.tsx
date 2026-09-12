@@ -39,8 +39,10 @@ import {
 } from 'recharts';
 import DemoSeeder from './DemoSeeder';
 import { computeDateRange, DateFilterMode } from '../lib/dateRanges';
+import { useAppLogo } from '../lib/appConfig';
 
 export default function DashboardView() {
+  const { logoUrl, defaultLogo } = useAppLogo();
   const [records, setRecords] = useState<ParkingRecord[]>([]);
   const [userShifts, setUserShifts] = useState<UserShift[]>([]);
   const [cashCuts, setCashCuts] = useState<UserShift[]>([]);
@@ -174,15 +176,14 @@ export default function DashboardView() {
     return computeDateRange(dateFilterMode, customDate);
   }, [dateFilterMode, customDate]);
 
-  // Completed records in selected date range
+  // Completed records in selected date range (considers collection time if paidAtEntry)
   const completedInPeriod = React.useMemo(() => {
-    return records.filter(r => 
-      r.status === 'COMPLETED' && 
-      r.exitTime !== null && 
-      r.exitTime !== undefined &&
-      r.exitTime >= dateRange.start &&
-      r.exitTime <= dateRange.end
-    );
+    return records.filter(r => {
+      if (r.status !== 'COMPLETED') return false;
+      const transactionTime = (r.paidAtEntry && r.entryTime) ? r.entryTime : (r.exitTime || r.entryTime);
+      return transactionTime !== null && transactionTime !== undefined &&
+        transactionTime >= dateRange.start && transactionTime <= dateRange.end;
+    });
   }, [records, dateRange]);
 
   // 1. Boletos registrados como cobrados en sistema en el período (monto teórico)
@@ -340,10 +341,13 @@ export default function DashboardView() {
             hourlyDataMap[entryHour].autos += 1;
           }
         }
-        if (r.status === 'COMPLETED' && r.exitTime && r.exitTime >= dateRange.start && r.exitTime <= dateRange.end) {
-          const exitHour = new Date(r.exitTime).getHours();
-          if (exitHour >= 0 && exitHour < 24) {
-            hourlyDataMap[exitHour].ingresos += (r.amountPaid || 0);
+        if (r.status === 'COMPLETED') {
+          const transTime = (r.paidAtEntry && r.entryTime) ? r.entryTime : (r.exitTime || r.entryTime);
+          if (transTime && transTime >= dateRange.start && transTime <= dateRange.end) {
+            const transHour = new Date(transTime).getHours();
+            if (transHour >= 0 && transHour < 24) {
+              hourlyDataMap[transHour].ingresos += (r.amountPaid || 0);
+            }
           }
         }
       });
@@ -373,11 +377,14 @@ export default function DashboardView() {
             dailyBuckets[key].autos += 1;
           }
         }
-        if (r.status === 'COMPLETED' && r.exitTime && r.exitTime >= dateRange.start && r.exitTime <= dateRange.end) {
-          const d = new Date(r.exitTime);
-          const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-          if (dailyBuckets[key]) {
-            dailyBuckets[key].ingresos += (r.amountPaid || 0);
+        if (r.status === 'COMPLETED') {
+          const transTime = (r.paidAtEntry && r.entryTime) ? r.entryTime : (r.exitTime || r.entryTime);
+          if (transTime && transTime >= dateRange.start && transTime <= dateRange.end) {
+            const d = new Date(transTime);
+            const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+            if (dailyBuckets[key]) {
+              dailyBuckets[key].ingresos += (r.amountPaid || 0);
+            }
           }
         }
       });
@@ -400,9 +407,15 @@ export default function DashboardView() {
       {/* Header and Quick Stats */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
-          <img src="/logo-plaza-1.jpg" alt="Logo" className="w-14 h-14 rounded-2xl object-cover border border-slate-700/60 shadow-lg" onError={(e) => {
-            e.currentTarget.style.display = 'none';
-          }} />
+          <img 
+            src={logoUrl || defaultLogo} 
+            alt="Logo" 
+            className="w-14 h-14 rounded-2xl object-contain bg-slate-800 border border-slate-700/60 shadow-lg p-1" 
+            referrerPolicy="no-referrer"
+            onError={(e) => {
+              e.currentTarget.src = defaultLogo;
+            }} 
+          />
           <div>
             <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">Panel de Control</h1>
           </div>

@@ -2,6 +2,7 @@ import { ParkingRecord, UserShift } from '../types';
 
 export interface ShiftReconciliation {
   records: ParkingRecord[];
+  matchedRecords: ParkingRecord[];
   carsCount: number;
   totalChargedInCars: number;
   expectedAmount: number;
@@ -47,12 +48,18 @@ export function reconcileShiftRecords(
 
     // 4. Fallback: cashier username + completed status + time window
     if (r.status === 'COMPLETED' && shift.startTime) {
-      const cashier = (r.processedBy || r.registeredBy || '').trim().toLowerCase();
+      // If paidAtEntry is true, the cashier who collected the payment was registeredBy
+      // Otherwise, the cashier who processed at exit is processedBy (falling back to registeredBy)
+      const cashier = (r.paidAtEntry 
+        ? (r.registeredBy || r.processedBy || '') 
+        : (r.processedBy || r.registeredBy || '')).trim().toLowerCase();
+
       if (cashier && (cashier === shiftUser || cashier.replace(/_/g, '') === shiftUser.replace(/_/g, ''))) {
-        const eventTime = r.exitTime || r.entryTime;
-        if (eventTime && eventTime >= (shift.startTime - 120000)) {
-          // If shift has endTime, check bound (with 2 min grace period)
-          if (!shift.endTime || eventTime <= (shift.endTime + 120000)) {
+        // For tickets paid at entry, the payment transaction time is entryTime
+        const eventTime = (r.paidAtEntry && r.entryTime) ? r.entryTime : (r.exitTime || r.entryTime);
+        if (eventTime && eventTime >= (shift.startTime - 180000)) { // 3 min grace before shift start
+          // If shift has endTime, check bound (with 5 min grace period after cut)
+          if (!shift.endTime || eventTime <= (shift.endTime + 300000)) {
             // Check lot ID if both specify one
             if (
               shift.parkingLotId === undefined || 
@@ -88,6 +95,7 @@ export function reconcileShiftRecords(
 
   return {
     records: matched,
+    matchedRecords: matched,
     carsCount: matched.length,
     totalChargedInCars,
     expectedAmount,

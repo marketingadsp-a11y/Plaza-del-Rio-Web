@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { doc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { getDb } from '../lib/firebase';
 import { TicketConfig } from '../types';
+import { useAppLogo } from '../lib/appConfig';
 import { 
   Printer, 
   Save, 
@@ -11,17 +12,25 @@ import {
   Sliders, 
   FileText,
   ToggleLeft,
-  ToggleRight
+  ToggleRight,
+  Image as ImageIcon,
+  RotateCcw,
+  ExternalLink,
+  Sparkles
 } from 'lucide-react';
 
 export default function TicketConfigView() {
+  const { logoUrl: globalLogo, saveLogoUrl, defaultLogo } = useAppLogo();
   const [config, setConfig] = useState<TicketConfig>({
     headerText: 'PLAZA DEL RÍO - PARKING',
     termsText: 'Conserve este boleto. No nos hacemos responsables por daños o robos parciales.',
     showLogo: true,
     showTerms: true,
-    exitShowFolio: true
+    exitShowFolio: true,
+    logoUrl: ''
   });
+  const [logoInput, setLogoInput] = useState<string>('');
+  const [logoPreviewError, setLogoPreviewError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -32,7 +41,11 @@ export default function TicketConfigView() {
     const db = getDb();
     const unsub = onSnapshot(doc(db, 'ticket_config', 'config'), (snap) => {
       if (snap.exists()) {
-        setConfig(snap.data() as TicketConfig);
+        const data = snap.data() as TicketConfig;
+        setConfig(data);
+        if (data.logoUrl !== undefined) {
+          setLogoInput(data.logoUrl || '');
+        }
       }
       setLoading(false);
     }, (err) => {
@@ -52,15 +65,26 @@ export default function TicketConfigView() {
 
     try {
       const db = getDb();
-      await setDoc(doc(db, 'ticket_config', 'config'), config);
+      const updatedConfig: TicketConfig = {
+        ...config,
+        logoUrl: logoInput.trim()
+      };
+      await setDoc(doc(db, 'ticket_config', 'config'), updatedConfig, { merge: true });
+      await saveLogoUrl(logoInput.trim());
+      setConfig(updatedConfig);
       setSuccess(true);
-      setTimeout(() => setSuccess(false), 3000);
+      setTimeout(() => setSuccess(false), 4000);
     } catch (err: any) {
       console.error(err);
       setError(`Error al guardar configuración remota: ${err.message || err}`);
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleResetLogo = () => {
+    setLogoInput('');
+    setLogoPreviewError(false);
   };
 
   if (loading) {
@@ -72,22 +96,33 @@ export default function TicketConfigView() {
     );
   }
 
+  const effectiveLogoPreview = logoInput.trim() || defaultLogo;
+
   return (
-    <div className="space-y-6 p-1.5 md:p-3 max-w-4xl mx-auto font-sans text-slate-300">
+    <div className="space-y-6 p-1.5 md:p-3 max-w-5xl mx-auto font-sans text-slate-300">
       {/* View Header */}
       <div className="flex items-center gap-3.5">
-        <img src="/logo-plaza-1.jpg" alt="Logo" className="w-14 h-14 rounded-2xl object-cover border border-slate-700/60 shadow-lg" onError={(e) => {
-          e.currentTarget.style.display = 'none';
-        }} />
+        <img 
+          src={globalLogo || defaultLogo} 
+          alt="Logo" 
+          className="w-14 h-14 rounded-2xl object-cover border border-slate-700/60 shadow-lg" 
+          referrerPolicy="no-referrer"
+          onError={(e) => {
+            e.currentTarget.src = defaultLogo;
+          }} 
+        />
         <div>
-          <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">Configuración de Ticket</h1>
+          <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">Configuración y Logotipo</h1>
+          <p className="text-xs md:text-sm text-slate-400">
+            Personaliza el logotipo de la aplicación, datos corporativos y formato de tickets impresos.
+          </p>
         </div>
       </div>
 
       {success && (
-        <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-emerald-400 text-sm flex items-center gap-2.5 animate-fade-in">
-          <Check size={18} />
-          <span>Configuración guardada en la nube con éxito. Se sincronizará al instante en los dispositivos móviles.</span>
+        <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-emerald-400 text-sm flex items-center gap-2.5 animate-fade-in shadow-lg">
+          <Check size={18} className="shrink-0" />
+          <span>¡Configuración y logotipo guardados con éxito! Se aplicaron a toda la app web y se sincronizarán en tus terminales y celulares.</span>
         </div>
       )}
 
@@ -100,13 +135,98 @@ export default function TicketConfigView() {
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Configuration Form */}
-        <form onSubmit={handleSave} className="bg-slate-800/60 border border-slate-700/50 rounded-3xl p-6 shadow-xl lg:col-span-7 space-y-6">
-          <h3 className="text-md font-bold text-white flex items-center gap-2 pb-4 border-b border-slate-700/40">
-            <Sliders size={18} className="text-blue-400" />
-            Parámetros del Boleto
-          </h3>
-
+        <form onSubmit={handleSave} className="bg-slate-800/60 border border-slate-700/50 rounded-3xl p-5 md:p-7 shadow-xl lg:col-span-7 space-y-6">
+          
+          {/* SECTION 1: LOGOTIPO GLOBAL */}
           <div className="space-y-4">
+            <h3 className="text-base font-bold text-white flex items-center gap-2 pb-3 border-b border-slate-700/40">
+              <ImageIcon size={18} className="text-blue-400" />
+              Logotipo Oficial del Sistema
+            </h3>
+            
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Ingresa la URL de la imagen de tu logotipo (PNG, JPG, SVG o WebP). Esta imagen se utilizará en toda la plataforma: barra lateral, inicio de sesión, cabeceras, cortes de turno, reportes PDF y tickets de cobro.
+            </p>
+
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
+                URL del Logotipo (Enlace público de imagen)
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={logoInput}
+                  onChange={(e) => {
+                    setLogoInput(e.target.value);
+                    setLogoPreviewError(false);
+                  }}
+                  placeholder="https://ejemplo.com/mi-logotipo.png"
+                  className="flex-1 px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                />
+                {logoInput && (
+                  <button
+                    type="button"
+                    onClick={handleResetLogo}
+                    title="Restablecer logo por defecto"
+                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs flex items-center gap-1.5 border border-slate-700 transition-colors cursor-pointer"
+                  >
+                    <RotateCcw size={14} />
+                    <span className="hidden sm:inline">Por Defecto</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Live Logo Preview Box */}
+            <div className="p-4 bg-slate-900/60 border border-slate-800 rounded-2xl flex items-center gap-4">
+              <div className="w-16 h-16 rounded-xl bg-slate-800 border border-slate-700 overflow-hidden flex items-center justify-center shrink-0 shadow-inner">
+                {logoPreviewError ? (
+                  <div className="text-center p-1 text-red-400 text-[10px]">
+                    <AlertTriangle size={16} className="mx-auto mb-1" />
+                    Error URL
+                  </div>
+                ) : (
+                  <img
+                    src={effectiveLogoPreview}
+                    alt="Vista previa logo"
+                    className="w-full h-full object-contain p-1"
+                    referrerPolicy="no-referrer"
+                    onError={() => setLogoPreviewError(true)}
+                  />
+                )}
+              </div>
+              <div className="min-w-0 flex-1 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-white">Vista Previa del Logotipo</span>
+                  {logoInput.trim() ? (
+                    <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full font-medium border border-blue-500/30">
+                      Personalizado
+                    </span>
+                  ) : (
+                    <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full font-medium border border-slate-700">
+                      Predeterminado
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1 truncate">
+                  {logoInput.trim() ? logoInput : 'Utilizando logotipo base de Plaza del Río'}
+                </p>
+                {logoPreviewError && (
+                  <span className="text-[10px] text-red-400 font-semibold block mt-1">
+                    No se pudo cargar la imagen desde este enlace. Verifica que sea una URL directa y accesible.
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* SECTION 2: PARÁMETROS DEL BOLETO */}
+          <div className="space-y-4 pt-4 border-t border-slate-700/40">
+            <h3 className="text-base font-bold text-white flex items-center gap-2 pb-2">
+              <Sliders size={18} className="text-blue-400" />
+              Parámetros del Boleto y Razón Social
+            </h3>
+
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
                 Texto de Cabecera (Nombre del Estacionamiento / Razón Social)
@@ -117,7 +237,7 @@ export default function TicketConfigView() {
                 value={config.headerText}
                 onChange={(e) => setConfig({ ...config, headerText: e.target.value })}
                 placeholder="ej. PLAZA DEL RÍO - PARKING"
-                className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-sm focus:outline-none"
+                className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:border-blue-500 transition-colors"
               />
             </div>
 
@@ -130,19 +250,20 @@ export default function TicketConfigView() {
                 value={config.termsText}
                 onChange={(e) => setConfig({ ...config, termsText: e.target.value })}
                 placeholder="Escribe las cláusulas o responsabilidades para el usuario..."
-                className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-xs focus:outline-none h-32 resize-none leading-relaxed"
+                className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-xs focus:outline-none focus:border-blue-500 transition-colors h-28 resize-none leading-relaxed"
               />
             </div>
           </div>
 
-          <div className="space-y-4 pt-4 border-t border-slate-700/40">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-blue-400">Visibilidad de Elementos</h4>
+          {/* SECTION 3: VISIBILIDAD */}
+          <div className="space-y-3 pt-4 border-t border-slate-700/40">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-blue-400">Visibilidad de Elementos en Ticket</h4>
             
             {/* Show Logo Switch */}
             <div className="flex items-center justify-between p-3.5 bg-slate-900/40 border border-slate-800 rounded-2xl">
               <div>
                 <span className="block text-xs font-bold text-white">Imprimir Logotipo Corporativo</span>
-                <span className="text-[10px] text-slate-500">Muestra el logo de Plaza del Río en la parte superior del boleto.</span>
+                <span className="text-[10px] text-slate-400">Muestra el logotipo configurado en la parte superior del boleto.</span>
               </div>
               <button
                 type="button"
@@ -161,7 +282,7 @@ export default function TicketConfigView() {
             <div className="flex items-center justify-between p-3.5 bg-slate-900/40 border border-slate-800 rounded-2xl">
               <div>
                 <span className="block text-xs font-bold text-white">Imprimir Cláusulas y Términos</span>
-                <span className="text-[10px] text-slate-500">Incluye las políticas de pérdida o siniestros impresas en papel térmico.</span>
+                <span className="text-[10px] text-slate-400">Incluye las políticas de pérdida o siniestros impresas en papel térmico.</span>
               </div>
               <button
                 type="button"
@@ -180,7 +301,7 @@ export default function TicketConfigView() {
             <div className="flex items-center justify-between p-3.5 bg-slate-900/40 border border-slate-800 rounded-2xl">
               <div>
                 <span className="block text-xs font-bold text-white">Mostrar Folio en Ticket de Salida</span>
-                <span className="text-[10px] text-slate-500">Imprime el folio correlativo al terminar y liquidar el cobro.</span>
+                <span className="text-[10px] text-slate-400">Imprime el folio correlativo al terminar y liquidar el cobro.</span>
               </div>
               <button
                 type="button"
@@ -200,17 +321,17 @@ export default function TicketConfigView() {
             <button
               type="submit"
               disabled={saving}
-              className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-blue-600/10 active:scale-95"
+              className="w-full sm:w-auto px-6 py-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-blue-600/20 active:scale-95"
             >
               {saving ? (
                 <>
-                  <Loader2 size={14} className="animate-spin" />
+                  <Loader2 size={16} className="animate-spin" />
                   Guardando en la Nube...
                 </>
               ) : (
                 <>
-                  <Save size={14} />
-                  Guardar Cambios
+                  <Save size={16} />
+                  Guardar Logotipo y Configuración
                 </>
               )}
             </button>
@@ -219,7 +340,7 @@ export default function TicketConfigView() {
 
         {/* Live Ticket Mockup Preview */}
         <div className="lg:col-span-5 space-y-4">
-          <span className="block text-xs font-bold tracking-widest text-slate-500 uppercase">
+          <span className="block text-xs font-bold tracking-widest text-slate-400 uppercase">
             Vista Previa del Ticket Impreso
           </span>
           
@@ -231,8 +352,16 @@ export default function TicketConfigView() {
             {/* Corporate Header */}
             <div className="text-center space-y-1 pb-4 border-b border-dashed border-slate-300">
               {config.showLogo && (
-                <div className="mx-auto w-10 h-10 border-2 border-slate-950 rounded-full flex items-center justify-center font-bold text-lg mb-2">
-                  PR
+                <div className="mx-auto w-14 h-14 mb-2 flex items-center justify-center">
+                  <img
+                    src={effectiveLogoPreview}
+                    alt="Logo Ticket"
+                    className="max-h-full max-w-full object-contain filter grayscale contrast-125"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                    }}
+                  />
                 </div>
               )}
               <span className="font-extrabold text-sm block uppercase tracking-wider">{config.headerText || 'PLAZA DEL RÍO'}</span>
@@ -258,7 +387,7 @@ export default function TicketConfigView() {
                 <span>11/07/2026 15:42</span>
               </div>
               <div className="flex justify-between">
-                <span>OPERADOR ENTRADA:</span>
+                <span>OPERADOR:</span>
                 <span>cajero1</span>
               </div>
             </div>
@@ -266,7 +395,6 @@ export default function TicketConfigView() {
             {/* Barcode Mockup */}
             <div className="py-2 flex flex-col items-center justify-center gap-1">
               <div className="h-8 bg-slate-950 w-3/4 flex items-center justify-around">
-                {/* Visual barcode white gaps */}
                 <div className="w-1 bg-white h-full" />
                 <div className="w-2 bg-white h-full" />
                 <div className="w-0.5 bg-white h-full" />
