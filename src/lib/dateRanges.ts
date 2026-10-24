@@ -1,4 +1,4 @@
-export type DateFilterMode = 'HOY' | 'AYER' | '7_DIAS' | 'MES_ACTUAL' | 'ULTIMO_MES' | 'FECHA';
+export type DateFilterMode = 'HOY' | 'AYER' | 'ANTIER' | '7_DIAS' | 'MES_ACTUAL' | 'ULTIMO_MES' | 'FECHA';
 
 export const GUADALAJARA_TIMEZONE = 'America/Mexico_City';
 
@@ -57,7 +57,7 @@ export function computeDateRange(mode: DateFilterMode, customDateStr?: string): 
       mode,
       start,
       end,
-      label: 'Hoy',
+      label: 'Hoy (Día en curso)',
       shortLabel: 'Hoy',
       isSingleDay: true,
       dayDate
@@ -76,6 +76,23 @@ export function computeDateRange(mode: DateFilterMode, customDateStr?: string): 
       end,
       label: 'Ayer',
       shortLabel: 'Ayer',
+      isSingleDay: true,
+      dayDate
+    };
+  }
+
+  if (mode === 'ANTIER') {
+    // 2 days ago in Guadalajara
+    const antierDate = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    const antierStr = getGuadalajaraDateStr(antierDate);
+    const { start, end } = getDayBoundsForDate(antierStr);
+    const dayDate = new Date(start);
+    return {
+      mode,
+      start,
+      end,
+      label: 'Antier',
+      shortLabel: 'Antier',
       isSingleDay: true,
       dayDate
     };

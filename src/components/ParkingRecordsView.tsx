@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, onSnapshot, doc, updateDoc, deleteDoc, setDoc } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, deleteDoc, setDoc, query, where } from 'firebase/firestore';
 import { getDb } from '../lib/firebase';
 import { ParkingRecord, VehicleTypeRate, User } from '../types';
+import { useParkingLots } from '../lib/parkingLots';
+import { useAppLogo } from '../lib/appConfig';
+import { computeDateRange, DateFilterMode, getGuadalajaraDateStr, GUADALAJARA_TIMEZONE } from '../lib/dateRanges';
 import { 
   Search, 
   Filter, 
@@ -17,7 +20,9 @@ import {
   Check, 
   X,
   Loader2,
-  AlertTriangle
+  AlertTriangle,
+  Building2,
+  DollarSign
 } from 'lucide-react';
 
 interface ParkingRecordsViewProps {
@@ -25,16 +30,25 @@ interface ParkingRecordsViewProps {
 }
 
 export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewProps) {
+  const { logoUrl } = useAppLogo();
   const [records, setRecords] = useState<ParkingRecord[]>([]);
   const [rates, setRates] = useState<VehicleTypeRate[]>([]);
+  const [usersMap, setUsersMap] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
 
+  // Parking lots hook
+  const { parkingLots, getLotName } = useParkingLots();
+
+  // Day / Period query state (queries Firestore only for the selected day/range)
+  const [dateFilterMode, setDateFilterMode] = useState<DateFilterMode>('HOY');
+  const [customDate, setCustomDate] = useState<string>(() => getGuadalajaraDateStr());
+
   // Search & Filter state
+  const [parkingLotFilter, setParkingLotFilter] = useState<number | 'ALL'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL'); // 'ALL', 'ACTIVE', 'COMPLETED'
   const [vehicleTypeFilter, setVehicleTypeFilter] = useState<string>('ALL');
   const [cashierFilter, setCashierFilter] = useState<string>('');
-  const [dateFilter, setDateFilter] = useState<string>(''); // YYYY-MM-DD format
 
   // Modal states
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -47,6 +61,7 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
   const [newVehicleType, setNewVehicleType] = useState('Auto');
   const [newDescription, setNewDescription] = useState('');
   const [newPhysicalType, setNewPhysicalType] = useState('Normal');
+  const [newParkingLotId, setNewParkingLotId] = useState<number>(currentUser.assignedParkingLot ?? 1);
 
   // Form states for Editing
   const [editPlate, setEditPlate] = useState('');
@@ -58,6 +73,7 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
   const [editPaymentMethod, setEditPaymentMethod] = useState<'Efectivo' | 'Tarjeta' | null>(null);
   const [editStatus, setEditStatus] = useState<'ACTIVE' | 'COMPLETED'>('ACTIVE');
   const [editPhysicalType, setEditPhysicalType] = useState('Normal');
+  const [editParkingLotId, setEditParkingLotId] = useState<number>(1);
 
   // Form states for Manual Exit Processing
   const [exitPaymentMethod, setExitPaymentMethod] = useState<'Efectivo' | 'Tarjeta'>('Efectivo');
@@ -65,7 +81,39 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
   const [exitNotes, setExitNotes] = useState('');
   const [exitPaidAtEntry, setExitPaidAtEntry] = useState(false);
 
-  // Load rates & records
+  // Compute active date range for Firestore query (aligned with Guadalajara timezone)
+  const dateRange = useMemo(() => {
+    return computeDateRange(dateFilterMode, customDate);
+  }, [dateFilterMode, customDate]);
+
+  // Formatted date subtitle for header display
+  const formattedRangeDates = useMemo(() => {
+    const startObj = new Date(dateRange.start);
+    const endObj = new Date(dateRange.end);
+    if (dateRange.isSingleDay) {
+      return startObj.toLocaleDateString('es-MX', {
+        timeZone: GUADALAJARA_TIMEZONE,
+        weekday: 'long',
+        day: '2-digit',
+        month: 'long',
+        year: 'numeric'
+      });
+    }
+    const s = startObj.toLocaleDateString('es-MX', {
+      timeZone: GUADALAJARA_TIMEZONE,
+      day: '2-digit',
+      month: 'short'
+    });
+    const e = endObj.toLocaleDateString('es-MX', {
+      timeZone: GUADALAJARA_TIMEZONE,
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
+    return `${s} al ${e}`;
+  }, [dateRange]);
+
+  // Load rates & users once
   useEffect(() => {
     const db = getDb();
     const unsubRates = onSnapshot(collection(db, 'vehicle_type_rates'), (snap) => {
@@ -85,7 +133,34 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
       setRates(list);
     });
 
-    const unsubRecords = onSnapshot(collection(db, 'parking_records'), (snap) => {
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
+      const map: Record<string, number> = {};
+      snap.forEach((doc) => {
+        const data = doc.data();
+        if (typeof data.assignedParkingLot === 'number' && data.assignedParkingLot > 0) {
+          map[doc.id.toLowerCase()] = data.assignedParkingLot;
+        }
+      });
+      setUsersMap(map);
+    });
+
+    return () => {
+      unsubRates();
+      unsubUsers();
+    };
+  }, []);
+
+  // Subscribe ONLY to parking_records within the selected day / period
+  useEffect(() => {
+    setLoading(true);
+    const db = getDb();
+    const qRecords = query(
+      collection(db, 'parking_records'),
+      where('entryTime', '>=', dateRange.start),
+      where('entryTime', '<=', dateRange.end)
+    );
+
+    const unsubRecords = onSnapshot(qRecords, (snap) => {
       const list: ParkingRecord[] = [];
       snap.forEach((doc) => {
         list.push({ ticketCode: doc.id, ...doc.data() } as ParkingRecord);
@@ -95,15 +170,41 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
       setRecords(list);
       setLoading(false);
     }, (err) => {
-      console.error(err);
+      console.error('Error querying parking_records by date:', err);
       setLoading(false);
     });
 
     return () => {
-      unsubRates();
       unsubRecords();
     };
-  }, []);
+  }, [dateRange.start, dateRange.end]);
+
+  // Resolve the parkingLotId of any ticket (explicit field, ticket prefix e.g. "1-75160", or cashier assignment)
+  const resolveRecordLotId = (rec: ParkingRecord): number => {
+    if (typeof rec.parkingLotId === 'number' && rec.parkingLotId > 0) {
+      return rec.parkingLotId;
+    }
+    const prefixMatch = String(rec.ticketCode || '').match(/^(\d+)-/);
+    if (prefixMatch) {
+      const parsed = parseInt(prefixMatch[1], 10);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    const regUser = (rec.registeredBy || '').trim().toLowerCase();
+    if (regUser && usersMap[regUser]) return usersMap[regUser];
+    const procUser = (rec.processedBy || '').trim().toLowerCase();
+    if (procUser && usersMap[procUser]) return usersMap[procUser];
+    return 1;
+  };
+
+  // Format parking lot label e.g. "1ro de Mayo (Estacionamiento 1)"
+  const getFormattedLotLabel = (lotId: number): string => {
+    const rawName = getLotName(lotId);
+    const defaultLabel = `Estacionamiento ${lotId}`;
+    if (rawName.toLowerCase() === defaultLabel.toLowerCase()) {
+      return defaultLabel;
+    }
+    return `${rawName} (Estacionamiento ${lotId})`;
+  };
 
   // Deduplicated unique vehicle rates for dropdown selectors to avoid duplicate keys and options
   const uniqueRates = useMemo(() => {
@@ -116,15 +217,17 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
     return Array.from(map.values());
   }, [rates]);
 
-  // Set default manual ticket code (format PR-XXXX)
+  // Generate unique manual ticket code
   const getNextTicketCode = () => {
-    if (records.length === 0) return 'PR-1001';
     const numericCodes = records
-      .map(r => parseInt(r.ticketCode.replace('PR-', '')))
+      .filter(r => r.ticketCode.startsWith('PR-'))
+      .map(r => parseInt(r.ticketCode.replace('PR-', ''), 10))
       .filter(n => !isNaN(n));
-    if (numericCodes.length === 0) return 'PR-1001';
-    const max = Math.max(...numericCodes);
-    return `PR-${(max + 1).toString().padStart(4, '0')}`;
+    if (numericCodes.length > 0) {
+      const max = Math.max(...numericCodes);
+      return `PR-${(max + 1).toString().padStart(4, '0')}`;
+    }
+    return `PR-${Date.now().toString().slice(-6)}`;
   };
 
   // Triggered when manual registration is submitted
@@ -152,7 +255,7 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
         description: newDescription,
         paidAtEntry: false,
         physicalType: newPhysicalType,
-        parkingLotId: currentUser.assignedParkingLot ?? 1
+        parkingLotId: newParkingLotId
       };
 
       await setDoc(doc(db, 'parking_records', code), newRecord);
@@ -177,6 +280,7 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
     setEditPaymentMethod(rec.paymentMethod);
     setEditStatus(rec.status);
     setEditPhysicalType(rec.physicalType || 'Normal');
+    setEditParkingLotId(resolveRecordLotId(rec));
     setIsEditModalOpen(true);
   };
 
@@ -201,7 +305,8 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
         amountPaid: editAmountPaid === '' ? null : Number(editAmountPaid),
         paymentMethod: editPaymentMethod,
         status: editStatus,
-        physicalType: editPhysicalType
+        physicalType: editPhysicalType,
+        parkingLotId: editParkingLotId
       };
 
       // If transition to ACTIVE, clear exit fields
@@ -280,33 +385,49 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
     }
   };
 
-  // Apply filters
-  const filteredRecords = records.filter((rec) => {
-    // 1. Search query (plate or code)
-    const matchesSearch = 
-      rec.plate.toLowerCase().includes(searchQuery.toLowerCase()) || 
-      rec.ticketCode.toLowerCase().includes(searchQuery.toLowerCase());
+  // Base filtered records (all filters except parkingLotFilter, to compute accurate counts per lot tab)
+  const baseFilteredRecords = useMemo(() => {
+    return records.filter((rec) => {
+      // 1. Search query (plate or code)
+      const matchesSearch = 
+        rec.plate.toLowerCase().includes(searchQuery.toLowerCase()) || 
+        rec.ticketCode.toLowerCase().includes(searchQuery.toLowerCase());
 
-    // 2. Status filter
-    const matchesStatus = statusFilter === 'ALL' || rec.status === statusFilter;
+      // 2. Status filter
+      const matchesStatus = statusFilter === 'ALL' || rec.status === statusFilter;
 
-    // 3. Vehicle Type filter
-    const matchesVehicle = vehicleTypeFilter === 'ALL' || rec.vehicleType === vehicleTypeFilter;
+      // 3. Vehicle Type filter
+      const matchesVehicle = vehicleTypeFilter === 'ALL' || rec.vehicleType === vehicleTypeFilter;
 
-    // 4. Cashier filter (either registered or processed)
-    const matchesCashier = !cashierFilter || 
-      rec.registeredBy.toLowerCase().includes(cashierFilter.toLowerCase()) || 
-      (rec.processedBy && rec.processedBy.toLowerCase().includes(cashierFilter.toLowerCase()));
+      // 4. Cashier filter (either registered or processed)
+      const matchesCashier = !cashierFilter || 
+        rec.registeredBy.toLowerCase().includes(cashierFilter.toLowerCase()) || 
+        (rec.processedBy && rec.processedBy.toLowerCase().includes(cashierFilter.toLowerCase()));
 
-    // 5. Date filter (based on entryTime day)
-    let matchesDate = true;
-    if (dateFilter) {
-      const entryDateStr = new Date(rec.entryTime).toISOString().split('T')[0];
-      matchesDate = entryDateStr === dateFilter;
-    }
+      return matchesSearch && matchesStatus && matchesVehicle && matchesCashier;
+    });
+  }, [records, searchQuery, statusFilter, vehicleTypeFilter, cashierFilter]);
 
-    return matchesSearch && matchesStatus && matchesVehicle && matchesCashier && matchesDate;
-  });
+  // Counts per parking lot for current filter criteria
+  const lotCounts = useMemo(() => {
+    const counts: Record<number, number> = {};
+    baseFilteredRecords.forEach((rec) => {
+      const lotId = resolveRecordLotId(rec);
+      counts[lotId] = (counts[lotId] || 0) + 1;
+    });
+    return counts;
+  }, [baseFilteredRecords, usersMap]);
+
+  // Final filtered records including selected parking lot
+  const filteredRecords = useMemo(() => {
+    if (parkingLotFilter === 'ALL') return baseFilteredRecords;
+    return baseFilteredRecords.filter((rec) => resolveRecordLotId(rec) === parkingLotFilter);
+  }, [baseFilteredRecords, parkingLotFilter, usersMap]);
+
+  // Total collected in the currently visible filtered records
+  const totalAmountFiltered = useMemo(() => {
+    return filteredRecords.reduce((sum, rec) => sum + (rec.amountPaid || 0), 0);
+  }, [filteredRecords]);
 
   // Unique cashiers list for autocompletion or visual hints
   const cashierNames = Array.from(new Set(
@@ -314,19 +435,31 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
   ));
 
   return (
-    <div className="space-y-6 p-1.5 md:p-3 max-w-7xl mx-auto font-sans text-slate-300">
+    <div className="space-y-5 p-1.5 md:p-3 max-w-7xl mx-auto font-sans text-slate-300">
       {/* View Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
-          <img src="/logo-plaza-1.jpg" alt="Logo" className="w-14 h-14 rounded-2xl object-cover border border-slate-700/60 shadow-lg" onError={(e) => {
-            e.currentTarget.style.display = 'none';
-          }} />
+          <img 
+            src={logoUrl || '/logo-plaza-1.jpg'} 
+            alt="Logo" 
+            className="w-14 h-14 rounded-2xl object-contain bg-slate-800 border border-slate-700/60 shadow-lg p-1" 
+            referrerPolicy="no-referrer"
+            onError={(e) => {
+              e.currentTarget.style.display = 'none';
+            }} 
+          />
           <div>
             <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">Registros y Tickets</h1>
+            <p className="text-xs text-slate-400">
+              Consulta optimizada por día y por estacionamiento
+            </p>
           </div>
         </div>
         <button
-          onClick={() => setIsCreateModalOpen(true)}
+          onClick={() => {
+            setNewParkingLotId(parkingLotFilter === 'ALL' ? (currentUser.assignedParkingLot ?? 1) : parkingLotFilter);
+            setIsCreateModalOpen(true);
+          }}
           className="flex items-center justify-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-blue-600/10 hover:shadow-blue-600/20 active:scale-95 transition-all self-start cursor-pointer"
         >
           <Plus size={16} />
@@ -334,40 +467,170 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
         </button>
       </div>
 
+      {/* Selector de Día / Período (Consulta directa en Firestore para evitar cargar todo el historial) */}
+      <div className="bg-slate-800/75 border border-slate-700/60 rounded-2xl p-4 shadow-xl space-y-3">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-blue-500/10 border border-blue-500/20 text-blue-400 rounded-xl shrink-0">
+              <Calendar size={18} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-bold text-white uppercase tracking-wider">Consulta por Día / Período</h3>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                  {dateRange.label}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 capitalize mt-0.5">
+                {formattedRangeDates}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            {[
+              { id: 'HOY', label: 'Hoy (Día en curso)' },
+              { id: 'AYER', label: 'Ver Ayer' },
+              { id: 'ANTIER', label: 'Ver Antier' },
+              { id: '7_DIAS', label: 'Última Semana en Curso' },
+              { id: 'FECHA', label: 'Por Fecha Manual' },
+            ].map((btn) => {
+              const isActive = dateFilterMode === btn.id;
+              return (
+                <button
+                  key={btn.id}
+                  onClick={() => setDateFilterMode(btn.id as DateFilterMode)}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    isActive
+                      ? 'bg-blue-600 text-white shadow-md shadow-blue-600/25 border border-blue-400/50'
+                      : 'bg-slate-900/80 text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700/70'
+                  }`}
+                >
+                  {btn.label}
+                </button>
+              );
+            })}
+
+            {dateFilterMode === 'FECHA' && (
+              <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-blue-500/50 shadow-inner">
+                <Calendar size={14} className="text-blue-400 shrink-0" />
+                <input
+                  type="date"
+                  value={customDate}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      setCustomDate(e.target.value);
+                      setDateFilterMode('FECHA');
+                    }
+                  }}
+                  className="bg-transparent border-none text-white text-xs font-bold focus:outline-none cursor-pointer"
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Selector de Estacionamiento: Todos, 1ro de Mayo (Estacionamiento 1), Nuñez (Estacionamiento 2) */}
+      <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-3.5 shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="p-2 bg-blue-500/10 border border-blue-500/20 text-blue-400 rounded-xl shrink-0">
+            <Building2 size={18} />
+          </div>
+          <div>
+            <span className="text-xs font-bold text-white block">Vista por Estacionamiento</span>
+            <span className="text-[11px] text-slate-400">
+              {parkingLotFilter === 'ALL' 
+                ? `Todos los estacionamientos (${filteredRecords.length} tickets • $${totalAmountFiltered.toFixed(2)})` 
+                : `${getFormattedLotLabel(parkingLotFilter)} (${filteredRecords.length} tickets • $${totalAmountFiltered.toFixed(2)})`}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setParkingLotFilter('ALL')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 border ${
+              parkingLotFilter === 'ALL'
+                ? 'bg-blue-600 text-white border-blue-400/50 shadow-md shadow-blue-600/25'
+                : 'bg-slate-900/80 text-slate-300 hover:text-white hover:bg-slate-800 border-slate-700/70'
+            }`}
+          >
+            <span>Todos</span>
+            <span className={`px-2 py-0.5 rounded-lg text-[10px] font-mono ${
+              parkingLotFilter === 'ALL'
+                ? 'bg-blue-800/70 text-blue-100'
+                : 'bg-slate-800 text-slate-400'
+            }`}>
+              {baseFilteredRecords.length}
+            </span>
+          </button>
+
+          {parkingLots.map((lot) => {
+            const isSelected = parkingLotFilter === lot.id;
+            const count = lotCounts[lot.id] || 0;
+            const label = getFormattedLotLabel(lot.id);
+
+            return (
+              <button
+                key={lot.id}
+                onClick={() => setParkingLotFilter(lot.id)}
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 border ${
+                  isSelected
+                    ? lot.id === 1
+                      ? 'bg-emerald-600 text-white border-emerald-400/50 shadow-md shadow-emerald-600/25'
+                      : 'bg-indigo-600 text-white border-indigo-400/50 shadow-md shadow-indigo-600/25'
+                    : 'bg-slate-900/80 text-slate-300 hover:text-white hover:bg-slate-800 border-slate-700/70'
+                }`}
+              >
+                <Building2 size={13} className="shrink-0 opacity-85" />
+                <span>{label}</span>
+                <span className={`px-2 py-0.5 rounded-lg text-[10px] font-mono ${
+                  isSelected
+                    ? 'bg-black/25 text-white'
+                    : 'bg-slate-800 text-slate-400'
+                }`}>
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Advanced Filters Card */}
-      <div className="bg-slate-800/40 border border-slate-700/40 rounded-2xl p-5 shadow-xl space-y-4">
-        {/* Row 1: Search & Status */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-          <div className="md:col-span-6 relative">
-            <span className="absolute inset-y-0 left-0 flex items-center pl-4 text-slate-400">
-              <Search size={18} />
+      <div className="bg-slate-800/40 border border-slate-700/40 rounded-2xl p-4 shadow-xl">
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+          <div className="md:col-span-4 relative">
+            <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-slate-400">
+              <Search size={16} />
             </span>
             <input
               type="text"
               placeholder="Buscar por placa o número de ticket..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-11 pr-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 text-sm"
+              className="w-full pl-10 pr-4 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 text-xs"
             />
           </div>
 
-          <div className="md:col-span-3">
+          <div className="md:col-span-2">
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-blue-500/40 text-sm"
+              className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-blue-500/40 text-xs"
             >
               <option value="ALL">Todos los Estados</option>
-              <option value="ACTIVE">Activos (En Estacionamiento)</option>
-              <option value="COMPLETED">Completados (Exited)</option>
+              <option value="ACTIVE">Activos (En Recinto)</option>
+              <option value="COMPLETED">Terminados</option>
             </select>
           </div>
 
-          <div className="md:col-span-3">
+          <div className="md:col-span-2">
             <select
               value={vehicleTypeFilter}
               onChange={(e) => setVehicleTypeFilter(e.target.value)}
-              className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-blue-500/40 text-sm"
+              className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-blue-500/40 text-xs"
             >
               <option value="ALL">Todos los Vehículos</option>
               {uniqueRates.map(r => (
@@ -375,50 +638,31 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
               ))}
             </select>
           </div>
-        </div>
 
-        {/* Row 2: Secondary Filters (Date & Cashier) */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-4 pt-2 border-t border-slate-700/30">
-          <div className="md:col-span-4 flex items-center gap-2">
-            <Calendar size={16} className="text-slate-400 shrink-0" />
-            <input
-              type="date"
-              value={dateFilter}
-              onChange={(e) => setDateFilter(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white text-xs focus:outline-none"
-            />
-            {dateFilter && (
-              <button 
-                onClick={() => setDateFilter('')}
-                className="text-[10px] text-red-400 hover:underline shrink-0"
-              >
-                Limpiar
-              </button>
-            )}
-          </div>
-
-          <div className="md:col-span-4 relative">
+          <div className="md:col-span-2 relative">
             <input
               type="text"
-              placeholder="Filtrar por Cajero/Usuario..."
+              placeholder="Filtrar por Cajero..."
               value={cashierFilter}
               onChange={(e) => setCashierFilter(e.target.value)}
               list="cashier-datalist"
-              className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 text-xs focus:outline-none"
+              className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 text-xs focus:outline-none"
             />
             <datalist id="cashier-datalist">
               {cashierNames.map(name => <option key={name} value={name} />)}
             </datalist>
           </div>
 
-          <div className="md:col-span-4 flex items-center justify-end">
+          <div className="md:col-span-2 flex items-center justify-end">
             <button
               onClick={() => {
+                setDateFilterMode('HOY');
+                setCustomDate(getGuadalajaraDateStr());
+                setParkingLotFilter('ALL');
                 setSearchQuery('');
                 setStatusFilter('ALL');
                 setVehicleTypeFilter('ALL');
                 setCashierFilter('');
-                setDateFilter('');
               }}
               className="text-xs text-slate-400 hover:text-white underline font-semibold cursor-pointer"
             >
@@ -441,6 +685,7 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
               <thead>
                 <tr className="border-b border-slate-700 text-slate-400 text-xs font-bold uppercase tracking-wider bg-slate-800/40">
                   <th className="py-4 px-4 font-mono">Ticket</th>
+                  <th className="py-4 px-4">Estacionamiento</th>
                   <th className="py-4 px-4">Placa</th>
                   <th className="py-4 px-4">Tipo Vehículo</th>
                   <th className="py-4 px-4">Entrada</th>
@@ -455,10 +700,22 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
                 {filteredRecords.map((rec) => {
                   const entryDate = new Date(rec.entryTime);
                   const exitDate = rec.exitTime ? new Date(rec.exitTime) : null;
+                  const lotId = resolveRecordLotId(rec);
+                  const lotName = getLotName(lotId);
                   
                   return (
                     <tr key={rec.ticketCode} className="hover:bg-slate-700/20 text-xs text-slate-300">
                       <td className="py-3.5 px-4 font-mono font-bold text-blue-400">{rec.ticketCode}</td>
+                      <td className="py-3.5 px-4">
+                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold border ${
+                          lotId === 1
+                            ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25'
+                            : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/25'
+                        }`}>
+                          <Building2 size={12} className="shrink-0" />
+                          <span>{lotName} <span className="opacity-70 font-normal">(Est. {lotId})</span></span>
+                        </span>
+                      </td>
                       <td className="py-3.5 px-4">
                         <span className="px-2.5 py-1 bg-slate-950 border border-slate-700 text-white font-mono rounded-lg font-bold text-[12px] tracking-wide">
                           {rec.plate}
@@ -533,10 +790,46 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
             </table>
           </div>
         ) : (
-          <div className="py-24 text-center text-slate-500">
-            <AlertTriangle size={32} className="mx-auto text-slate-600 mb-2" />
-            <span className="font-semibold text-slate-400">No se encontraron tickets</span>
-            <p className="text-xs mt-1">Prueba cambiando tu búsqueda o limpiando los filtros activos.</p>
+          <div className="py-16 px-4 text-center space-y-4 max-w-lg mx-auto">
+            <div className="w-12 h-12 mx-auto rounded-2xl bg-slate-800 border border-slate-700/70 flex items-center justify-center text-slate-400">
+              <Calendar size={24} />
+            </div>
+            <div className="space-y-1">
+              <span className="font-bold text-white text-sm block">
+                {dateFilterMode === 'HOY'
+                  ? 'Sin tickets registrados en el día en curso todavía'
+                  : `No se encontraron tickets en ${dateRange.label.toLowerCase()}`}
+              </span>
+              <p className="text-xs text-slate-400">
+                Puedes consultar días anteriores o cambiar el estacionamiento seleccionado.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+              {dateFilterMode !== 'AYER' && (
+                <button
+                  onClick={() => setDateFilterMode('AYER')}
+                  className="px-3.5 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-bold transition-all cursor-pointer"
+                >
+                  Ver Ayer
+                </button>
+              )}
+              {dateFilterMode !== 'ANTIER' && (
+                <button
+                  onClick={() => setDateFilterMode('ANTIER')}
+                  className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+                >
+                  Ver Antier
+                </button>
+              )}
+              {dateFilterMode !== '7_DIAS' && (
+                <button
+                  onClick={() => setDateFilterMode('7_DIAS')}
+                  className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+                >
+                  Última Semana en Curso
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -557,6 +850,23 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
             </h3>
             
             <form onSubmit={handleCreateRecord} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
+                  Estacionamiento
+                </label>
+                <select
+                  value={newParkingLotId}
+                  onChange={(e) => setNewParkingLotId(Number(e.target.value))}
+                  className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-sm focus:outline-none"
+                >
+                  {parkingLots.map((lot) => (
+                    <option key={lot.id} value={lot.id}>
+                      {getFormattedLotLabel(lot.id)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
                   Placa
@@ -766,6 +1076,23 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
             </h3>
 
             <form onSubmit={handleSaveEdit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
+                  Estacionamiento
+                </label>
+                <select
+                  value={editParkingLotId}
+                  onChange={(e) => setEditParkingLotId(Number(e.target.value))}
+                  className="w-full px-3.5 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white text-xs focus:outline-none"
+                >
+                  {parkingLots.map((lot) => (
+                    <option key={lot.id} value={lot.id}>
+                      {getFormattedLotLabel(lot.id)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
                   Placa del Vehículo
