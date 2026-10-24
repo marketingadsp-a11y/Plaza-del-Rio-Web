@@ -1311,10 +1311,57 @@ export default function ShiftsView() {
           </div>
         </>
       ) : (
-          <div className="py-24 text-center text-slate-500">
-            <History size={32} className="mx-auto text-slate-600 mb-2" />
-            <span className="font-semibold text-slate-400">Sin cortes de caja en esta fecha</span>
-            <p className="text-xs mt-1">Modifica los filtros o selecciona otra fecha para consultar los registros.</p>
+          <div className="py-16 px-4 text-center space-y-4 max-w-lg mx-auto">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-slate-800 border border-slate-700/70 flex items-center justify-center text-slate-400 shadow-inner">
+              <History size={26} />
+            </div>
+            
+            <div className="space-y-1.5">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+                Base de datos en línea y sincronizada
+              </div>
+              <h3 className="text-base font-bold text-white">
+                {filterMode === 'HOY' 
+                  ? 'Sin cortes ni turnos registrados el día de hoy todavía' 
+                  : 'Sin cortes de caja en el período seleccionado'}
+              </h3>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                {filterMode === 'HOY'
+                  ? 'La base de datos está operando normalmente. En cuanto un cajero abra un turno o realice un corte hoy, se reflejará aquí en tiempo real de forma automática.'
+                  : 'Modifica los filtros o selecciona otra fecha para consultar los registros anteriores.'}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+              {filterMode !== 'AYER' && (
+                <button
+                  onClick={() => setFilterMode('AYER')}
+                  className="px-3.5 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-bold transition-all cursor-pointer"
+                >
+                  Ver Cortes de Ayer
+                </button>
+              )}
+              {filterMode !== '7_DIAS' && (
+                <button
+                  onClick={() => setFilterMode('7_DIAS')}
+                  className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+                >
+                  Ver Últimos 7 Días
+                </button>
+              )}
+              {filterMode !== 'TODOS' && (
+                <button
+                  onClick={() => setFilterMode('TODOS')}
+                  className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+                >
+                  Ver Todos los Registros
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>

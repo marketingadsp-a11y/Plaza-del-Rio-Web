@@ -485,6 +485,35 @@ export default function DashboardView() {
         </div>
       </div>
 
+      {/* Indicador de base de datos en línea cuando hoy aún no tiene registros */}
+      {dateFilterMode === 'HOY' && completedInPeriod.length === 0 && periodCuts.length === 0 && activeCount === 0 && !loading && (
+        <div className="bg-slate-800/70 border border-slate-700/60 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs animate-fade-in shadow-lg">
+          <div className="flex items-center gap-2.5">
+            <span className="relative flex h-2.5 w-2.5 shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+            </span>
+            <span className="text-slate-300">
+              <strong className="text-white">Base de datos en línea y sincronizada:</strong> No hay registros generados hoy todavía (los datos se reflejarán automáticamente en cuanto se abra turno o cobren boletos).
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => setDateFilterMode('AYER')}
+              className="px-3 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 font-semibold cursor-pointer transition-all"
+            >
+              Consultar Ayer
+            </button>
+            <button
+              onClick={() => setDateFilterMode('7_DIAS')}
+              className="px-3 py-1.5 rounded-xl bg-slate-700/60 hover:bg-slate-700 text-slate-300 border border-slate-600/50 font-semibold cursor-pointer transition-all"
+            >
+              Últimos 7 días
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* KPI 1: Active Vehicles */}
