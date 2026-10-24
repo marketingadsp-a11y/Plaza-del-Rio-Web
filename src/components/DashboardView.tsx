@@ -25,7 +25,9 @@ import {
   Check,
   Key,
   Copy,
-  RefreshCw
+  RefreshCw,
+  UserX,
+  Building2
 } from 'lucide-react';
 import { 
   AreaChart, 
@@ -45,16 +47,32 @@ import {
 import DemoSeeder from './DemoSeeder';
 import { computeDateRange, DateFilterMode } from '../lib/dateRanges';
 import { useAppLogo } from '../lib/appConfig';
+import { useParkingLots } from '../lib/parkingLots';
 
 interface DashboardViewProps {
   currentUser?: User | null;
 }
 
+interface ActiveCashierInfo {
+  username: string;
+  fullName: string;
+  role: 'ADMIN' | 'EMPLOYEE';
+  parkingLotId: number | null;
+  openShift: UserShift | null;
+  openShiftCollection: 'user_shifts' | 'cash_cuts' | null;
+  activeSince: number;
+  lastActivityTime: number;
+  ticketsCount: number;
+  collectedAmount: number;
+}
+
 export default function DashboardView({ currentUser }: DashboardViewProps) {
   const { logoUrl, defaultLogo } = useAppLogo();
+  const { getLotName } = useParkingLots();
   const [records, setRecords] = useState<ParkingRecord[]>([]);
   const [userShifts, setUserShifts] = useState<UserShift[]>([]);
   const [cashCuts, setCashCuts] = useState<UserShift[]>([]);
+  const [usersList, setUsersList] = useState<User[]>([]);
   const [rates, setRates] = useState<VehicleTypeRate[]>([]);
   const [loading, setLoading] = useState(true);
   const [revenueMode, setRevenueMode] = useState<'REAL' | 'FISICO' | 'TEORICO'>('REAL');
@@ -72,6 +90,13 @@ export default function DashboardView({ currentUser }: DashboardViewProps) {
   const [exitPaymentMethod, setExitPaymentMethod] = useState<'Efectivo' | 'Tarjeta'>('Efectivo');
   const [exitNotes, setExitNotes] = useState<string>('');
   const [submittingExit, setSubmittingExit] = useState(false);
+
+  // Close Cashier Session Modal state
+  const [closingCashier, setClosingCashier] = useState<ActiveCashierInfo | null>(null);
+  const [closeCashierMode, setCloseCashierMode] = useState<'SOLO_SESION' | 'CON_CORTE'>('SOLO_SESION');
+  const [closeCashierActualAmount, setCloseCashierActualAmount] = useState<number | ''>(0);
+  const [closeCashierNotes, setCloseCashierNotes] = useState<string>('');
+  const [submittingCloseCashier, setSubmittingCloseCashier] = useState(false);
 
   // Dynamic weekly permission code from permission_codes/current -> CodigoPermiso
   const [permissionCode, setPermissionCode] = useState<string | null>(null);
@@ -152,6 +177,21 @@ export default function DashboardView({ currentUser }: DashboardViewProps) {
       setRates(list);
     }, (error) => {
       console.error('Error fetching rates:', error);
+    });
+    return unsub;
+  }, []);
+
+  // Load users in real-time (to get full names, assigned lots, and sessionClosedAt timestamps)
+  useEffect(() => {
+    const db = getDb();
+    const unsub = onSnapshot(collection(db, 'users'), (snap) => {
+      const list: User[] = [];
+      snap.forEach((d) => {
+        list.push({ username: d.id, ...d.data() } as User);
+      });
+      setUsersList(list);
+    }, (error) => {
+      console.error('Error listening to users:', error);
     });
     return unsub;
   }, []);
@@ -388,42 +428,221 @@ export default function DashboardView({ currentUser }: DashboardViewProps) {
       ? cutsActualDelivered 
       : theoreticalEarningsInPeriod;
 
-  // Smart calculation for Active Cashiers:
-  // 1. Cashiers who have an explicitly open shift in shifts state
-  // 2. PLUS cashiers who have registered/processed a ticket within the last 12 hours and do not have a closed shift after that
-  const activeCashiersCount = React.useMemo(() => {
-    const activeSet = new Set<string>();
-    
-    // Check open shifts
+  // Detailed calculation for Active Cashiers:
+  // 1. Cashiers who have an explicitly open shift in shifts state (after any sessionClosedAt)
+  // 2. PLUS cashiers who have registered/processed a ticket within the last 12 hours and do not have a closed shift or sessionClosedAt after that
+  const activeCashiersList = React.useMemo<ActiveCashierInfo[]>(() => {
+    const twelveHoursAgo = Date.now() - 12 * 60 * 60 * 1000;
+    const candidateUsernames = new Set<string>();
+
     shifts.forEach(s => {
       if (!s.isClosed && s.username) {
-        activeSet.add(s.username);
+        candidateUsernames.add(s.username);
       }
     });
 
-    // Check recent ticket activity (last 12 hours)
-    const twelveHoursAgo = Date.now() - 12 * 60 * 60 * 1000;
     records.forEach(r => {
-      if (r.entryTime && r.entryTime >= twelveHoursAgo) {
-        if (r.registeredBy) {
-          const hasClosedShiftAfter = shifts.some(s => s.username === r.registeredBy && s.isClosed && s.endTime && s.endTime > r.entryTime);
-          if (!hasClosedShiftAfter) {
-            activeSet.add(r.registeredBy);
-          }
-        }
+      if (r.entryTime && r.entryTime >= twelveHoursAgo && r.registeredBy) {
+        candidateUsernames.add(r.registeredBy);
       }
-      if (r.exitTime && r.exitTime >= twelveHoursAgo) {
-        if (r.processedBy) {
-          const hasClosedShiftAfter = shifts.some(s => s.username === r.processedBy && s.isClosed && s.endTime && s.endTime > r.exitTime);
-          if (!hasClosedShiftAfter) {
-            activeSet.add(r.processedBy);
-          }
-        }
+      if (r.exitTime && r.exitTime >= twelveHoursAgo && r.processedBy) {
+        candidateUsernames.add(r.processedBy);
       }
     });
 
-    return activeSet.size;
-  }, [shifts, records]);
+    const result: ActiveCashierInfo[] = [];
+
+    candidateUsernames.forEach((uname) => {
+      const userObj = usersList.find(u => u.username.toLowerCase() === uname.toLowerCase());
+      const sessionClosedAt = userObj?.sessionClosedAt || 0;
+
+      // Latest closed shift endTime for this user
+      let latestClosedShiftEnd = 0;
+      shifts.forEach(s => {
+        if (s.username.toLowerCase() === uname.toLowerCase() && s.isClosed && s.endTime && s.endTime > latestClosedShiftEnd) {
+          latestClosedShiftEnd = s.endTime;
+        }
+      });
+
+      const lastBoundaryTime = Math.max(sessionClosedAt, latestClosedShiftEnd);
+
+      // Find if user has an open shift started after sessionClosedAt
+      let openShift: UserShift | null = null;
+      let openShiftCollection: 'user_shifts' | 'cash_cuts' | null = null;
+
+      const openInUserShifts = userShifts.find(
+        s => s.username.toLowerCase() === uname.toLowerCase() && !s.isClosed && (!sessionClosedAt || s.startTime > sessionClosedAt)
+      );
+      const openInCashCuts = cashCuts.find(
+        s => s.username.toLowerCase() === uname.toLowerCase() && !s.isClosed && (!sessionClosedAt || s.startTime > sessionClosedAt)
+      );
+
+      if (openInUserShifts) {
+        openShift = openInUserShifts;
+        openShiftCollection = 'user_shifts';
+      } else if (openInCashCuts) {
+        openShift = openInCashCuts;
+        openShiftCollection = 'cash_cuts';
+      }
+
+      // Check ticket activity after lastBoundaryTime within the last 12 hours
+      let earliestUnclosedActivity = Infinity;
+      let latestUnclosedActivity = 0;
+      let detectedLotId: number | null = null;
+      let ticketsCount = 0;
+      let collectedAmount = 0;
+
+      const sessionFloor = openShift ? openShift.startTime : Math.max(twelveHoursAgo, lastBoundaryTime);
+
+      records.forEach(r => {
+        const isEntryByThisUser = r.registeredBy && r.registeredBy.toLowerCase() === uname.toLowerCase() && r.entryTime && r.entryTime > lastBoundaryTime && r.entryTime >= twelveHoursAgo;
+        const isExitByThisUser = r.processedBy && r.processedBy.toLowerCase() === uname.toLowerCase() && r.exitTime && r.exitTime > lastBoundaryTime && r.exitTime >= twelveHoursAgo;
+
+        if (isEntryByThisUser && r.entryTime) {
+          if (r.entryTime < earliestUnclosedActivity) earliestUnclosedActivity = r.entryTime;
+          if (r.entryTime > latestUnclosedActivity) {
+            latestUnclosedActivity = r.entryTime;
+            if (r.parkingLotId) detectedLotId = r.parkingLotId;
+          }
+        }
+        if (isExitByThisUser && r.exitTime) {
+          if (r.exitTime < earliestUnclosedActivity) earliestUnclosedActivity = r.exitTime;
+          if (r.exitTime > latestUnclosedActivity) {
+            latestUnclosedActivity = r.exitTime;
+            if (r.parkingLotId) detectedLotId = r.parkingLotId;
+          }
+        }
+
+        // Count cobros in current session
+        if (!r.excludeFromAccounting) {
+          if (r.paidAtEntry && r.registeredBy?.toLowerCase() === uname.toLowerCase() && r.entryTime && r.entryTime >= sessionFloor && r.entryTime > lastBoundaryTime) {
+            ticketsCount++;
+            collectedAmount += (r.amountPaid || 0);
+          } else if (!r.paidAtEntry && r.status === 'COMPLETED' && r.processedBy?.toLowerCase() === uname.toLowerCase() && r.exitTime && r.exitTime >= sessionFloor && r.exitTime > lastBoundaryTime) {
+            ticketsCount++;
+            collectedAmount += (r.amountPaid || 0);
+          }
+        }
+      });
+
+      const hasUnclosedActivity = latestUnclosedActivity > 0;
+
+      if (openShift || hasUnclosedActivity) {
+        const activeSince = openShift
+          ? openShift.startTime
+          : (earliestUnclosedActivity !== Infinity ? earliestUnclosedActivity : latestUnclosedActivity);
+        const lastActivityTime = Math.max(openShift?.startTime || 0, latestUnclosedActivity);
+
+        result.push({
+          username: userObj?.username || uname,
+          fullName: userObj?.fullName || uname,
+          role: userObj?.role || 'EMPLOYEE',
+          parkingLotId: openShift?.parkingLotId ?? userObj?.assignedParkingLot ?? detectedLotId ?? null,
+          openShift,
+          openShiftCollection,
+          activeSince,
+          lastActivityTime,
+          ticketsCount,
+          collectedAmount
+        });
+      }
+    });
+
+    return result.sort((a, b) => b.lastActivityTime - a.lastActivityTime);
+  }, [shifts, userShifts, cashCuts, records, usersList]);
+
+  const activeCashiersCount = activeCashiersList.length;
+
+  const openCloseCashierModal = (cashier: ActiveCashierInfo) => {
+    setClosingCashier(cashier);
+    const expected = cashier.openShift?.expectedAmount || cashier.collectedAmount || 0;
+    setCloseCashierMode(cashier.openShift ? 'CON_CORTE' : 'SOLO_SESION');
+    setCloseCashierActualAmount(expected);
+    setCloseCashierNotes('');
+  };
+
+  const handleConfirmCloseCashierSession = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!closingCashier || submittingCloseCashier) return;
+
+    setSubmittingCloseCashier(true);
+    try {
+      const db = getDb();
+      const nowMs = Date.now();
+
+      // 1. Mark sessionClosedAt on the user document so active session is terminated
+      await setDoc(
+        doc(db, 'users', closingCashier.username),
+        {
+          sessionClosedAt: nowMs,
+          forceLogout: true
+        },
+        { merge: true }
+      );
+
+      // 2. Close any open shift documents for this cashier
+      const openUserShiftDocs = userShifts.filter(
+        s => s.username.toLowerCase() === closingCashier.username.toLowerCase() && !s.isClosed
+      );
+      const openCashCutDocs = cashCuts.filter(
+        s => s.username.toLowerCase() === closingCashier.username.toLowerCase() && !s.isClosed
+      );
+
+      const expectedVal = closingCashier.openShift?.expectedAmount || closingCashier.collectedAmount || 0;
+      const actualVal = closeCashierMode === 'CON_CORTE' ? Number(closeCashierActualAmount || 0) : expectedVal;
+      const diffVal = actualVal - expectedVal;
+      const noteText = closeCashierNotes.trim() || `Sesión cerrada desde Panel de Control por @${currentUser?.username || 'admin'}`;
+
+      for (const s of openUserShiftDocs) {
+        await updateDoc(doc(db, 'user_shifts', s.shiftId), {
+          isClosed: true,
+          endTime: nowMs,
+          expectedAmount: expectedVal,
+          actualAmount: actualVal,
+          collectedAmount: actualVal,
+          difference: diffVal,
+          notes: s.notes ? `${s.notes} | ${noteText}` : noteText
+        });
+      }
+
+      for (const c of openCashCutDocs) {
+        await updateDoc(doc(db, 'cash_cuts', c.shiftId), {
+          isClosed: true,
+          endTime: nowMs,
+          expectedAmount: expectedVal,
+          actualAmount: actualVal,
+          collectedAmount: actualVal,
+          difference: diffVal,
+          notes: c.notes ? `${c.notes} | ${noteText}` : noteText
+        });
+      }
+
+      // 3. If the admin explicitly chose 'CON_CORTE' and there was no open shift document yet, create a cash_cut record
+      if (closeCashierMode === 'CON_CORTE' && openUserShiftDocs.length === 0 && openCashCutDocs.length === 0) {
+        const cutId = `CUT${String(nowMs).slice(-7)}`;
+        await setDoc(doc(db, 'cash_cuts', cutId), {
+          cutId,
+          username: closingCashier.username,
+          parkingLotId: closingCashier.parkingLotId || 1,
+          startTime: closingCashier.activeSince || nowMs,
+          endTime: nowMs,
+          initialAmount: 200,
+          expectedAmount: expectedVal,
+          actualAmount: actualVal,
+          collectedAmount: actualVal,
+          difference: diffVal,
+          isClosed: true,
+          notes: noteText
+        });
+      }
+
+      setClosingCashier(null);
+    } catch (err) {
+      console.error('Error al cerrar sesión del cajero:', err);
+    } finally {
+      setSubmittingCloseCashier(false);
+    }
+  };
 
   // Chart data: Distribution by Vehicle Type in period
   const vehicleTypeCounts: { [key: string]: number } = {};
@@ -842,17 +1061,80 @@ export default function DashboardView({ currentUser }: DashboardViewProps) {
         </div>
 
         {/* KPI 3: Active Cashiers */}
-        <div className="bg-slate-800/60 border border-slate-700/50 rounded-2xl p-6 shadow-xl relative overflow-hidden group hover:border-purple-500/30 transition-all duration-300">
-          <div className="absolute top-0 right-0 p-8 bg-purple-500/5 rounded-full translate-x-1/4 -translate-y-1/4 group-hover:scale-110 transition-transform" />
+        <div className="bg-slate-800/60 border border-slate-700/50 rounded-2xl p-6 shadow-xl relative overflow-hidden group hover:border-purple-500/30 transition-all duration-300 flex flex-col justify-between">
+          <div className="absolute top-0 right-0 p-8 bg-purple-500/5 rounded-full translate-x-1/4 -translate-y-1/4 group-hover:scale-110 transition-transform pointer-events-none" />
           <div className="flex items-start justify-between">
-            <div className="space-y-2">
+            <div className="space-y-1">
               <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Cajeros Activos</span>
-              <h3 className="text-3xl font-extrabold text-white">{activeCashiersCount}</h3>
-              <p className="text-[11px] text-purple-400 font-medium">Turnos abiertos en este momento</p>
+              <div className="flex items-baseline gap-2.5">
+                <h3 className="text-3xl font-extrabold text-white">{activeCashiersCount}</h3>
+                <p className="text-[11px] text-purple-400 font-medium">Turnos abiertos en este momento</p>
+              </div>
             </div>
-            <div className="p-3 bg-purple-500/10 border border-purple-500/20 text-purple-400 rounded-xl">
+            <div className="p-3 bg-purple-500/10 border border-purple-500/20 text-purple-400 rounded-xl shrink-0">
               <Users size={24} />
             </div>
+          </div>
+
+          {/* Lista de cajeros activos con botón de cerrar sesión */}
+          <div className="mt-4 pt-3 border-t border-slate-700/50">
+            {activeCashiersList.length > 0 ? (
+              <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                {activeCashiersList.map((cashier) => {
+                  const elapsedMin = Math.max(0, Math.floor((Date.now() - cashier.activeSince) / 60000));
+                  const hours = Math.floor(elapsedMin / 60);
+                  const mins = elapsedMin % 60;
+                  const elapsedStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+                  const lotLabel = cashier.parkingLotId ? getLotName(cashier.parkingLotId) : null;
+
+                  return (
+                    <div
+                      key={cashier.username}
+                      className="flex items-center justify-between gap-2 bg-slate-900/75 border border-slate-700/60 rounded-xl px-3 py-2 text-xs hover:border-purple-500/40 transition-all"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                          <span className="font-bold text-white truncate">
+                            {cashier.fullName}
+                          </span>
+                          <span className="text-[10px] font-mono text-purple-300 bg-purple-500/15 border border-purple-500/30 px-1.5 py-0.5 rounded shrink-0">
+                            @{cashier.username}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5 flex-wrap">
+                          {lotLabel && (
+                            <span className="text-blue-300 font-semibold flex items-center gap-0.5">
+                              <Building2 size={10} />
+                              {lotLabel}
+                            </span>
+                          )}
+                          <span>• Activo hace {elapsedStr}</span>
+                          {cashier.collectedAmount > 0 && (
+                            <span className="text-emerald-400 font-mono font-bold">
+                              • ${cashier.collectedAmount.toFixed(0)} ({cashier.ticketsCount})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => openCloseCashierModal(cashier)}
+                        title={`Cerrar sesión de @${cashier.username}`}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/30 text-[11px] font-bold transition-all cursor-pointer shrink-0"
+                      >
+                        <UserX size={13} />
+                        <span>Cerrar sesión</span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-500 italic">
+                Ningún cajero con sesión o turno abierto en este momento
+              </p>
+            )}
           </div>
         </div>
       </div>
@@ -1507,6 +1789,160 @@ export default function DashboardView({ currentUser }: DashboardViewProps) {
                       ? 'Dar Salida sin Cobro ($0)'
                       : `Confirmar Salida ($${Number(exitAmountPaid || 0).toFixed(2)})`}
                   </span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Cerrar Sesión de Cajero Activo */}
+      {closingCashier && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 py-6 backdrop-blur-sm">
+          <div className="bg-slate-800 border border-slate-700 rounded-3xl p-6 w-full max-w-md shadow-2xl relative animate-fade-in">
+            <button
+              onClick={() => setClosingCashier(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-xl hover:bg-slate-700/50 cursor-pointer"
+            >
+              <X size={20} />
+            </button>
+
+            <h3 className="text-lg font-bold text-white mb-3 flex items-center gap-2">
+              <UserX size={20} className="text-red-400" />
+              Cerrar Sesión de Cajero
+            </h3>
+
+            {/* Resumen del Cajero */}
+            <div className="bg-slate-900/75 p-4 rounded-2xl border border-slate-700/60 mb-4 space-y-2">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Nombre:</span>
+                <span className="font-bold text-white text-sm">{closingCashier.fullName}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Usuario:</span>
+                <span className="font-mono bg-purple-500/15 border border-purple-500/30 px-2 py-0.5 rounded text-purple-300 font-bold">
+                  @{closingCashier.username}
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Estacionamiento:</span>
+                <span className="font-semibold text-blue-300">
+                  {closingCashier.parkingLotId ? getLotName(closingCashier.parkingLotId) : 'General / Todos'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Última Actividad:</span>
+                <span className="text-slate-300">
+                  {new Date(closingCashier.lastActivityTime).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Cobrado en sesión actual:</span>
+                <span className="text-emerald-400 font-bold font-mono">
+                  ${closingCashier.collectedAmount.toFixed(2)} ({closingCashier.ticketsCount} boletos)
+                </span>
+              </div>
+            </div>
+
+            <form onSubmit={handleConfirmCloseCashierSession} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
+                  Tipo de cierre de sesión
+                </label>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setCloseCashierMode('SOLO_SESION')}
+                    className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                      closeCashierMode === 'SOLO_SESION'
+                        ? 'bg-red-500/20 border-red-500 text-red-300 shadow-sm'
+                        : 'bg-slate-900/60 border-slate-700 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <UserX size={14} />
+                      <span>Solo cerrar sesión</span>
+                    </div>
+                    <span className="text-[10px] font-normal opacity-80">Finalizar estado activo</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCloseCashierMode('CON_CORTE');
+                      setCloseCashierActualAmount(closingCashier.openShift?.expectedAmount || closingCashier.collectedAmount || 0);
+                    }}
+                    className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                      closeCashierMode === 'CON_CORTE'
+                        ? 'bg-purple-600/20 border-purple-500 text-purple-300 shadow-sm'
+                        : 'bg-slate-900/60 border-slate-700 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <DollarSign size={14} />
+                      <span>Cerrar y generar corte</span>
+                    </div>
+                    <span className="text-[10px] font-normal opacity-80">Registrar entrega de caja</span>
+                  </button>
+                </div>
+              </div>
+
+              {closeCashierMode === 'CON_CORTE' ? (
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
+                    Monto Físico Entregado por el Cajero ($)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    required
+                    value={closeCashierActualAmount}
+                    onChange={(e) => setCloseCashierActualAmount(e.target.value === '' ? '' : Number(e.target.value))}
+                    className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-base font-bold focus:outline-none focus:ring-2 focus:ring-purple-500/40"
+                  />
+                </div>
+              ) : (
+                <div className="bg-slate-900/80 border border-slate-700/60 rounded-2xl p-3.5 text-xs text-slate-300 space-y-1">
+                  <div className="font-bold flex items-center gap-1.5 text-red-300">
+                    <Info size={14} className="shrink-0" />
+                    <span>Cierre inmediato de sesión activa</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Se cerrará la sesión activa de <strong>@{closingCashier.username}</strong> sin generar un nuevo registro de corte de caja.
+                  </p>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
+                  Notas / Motivo (Opcional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ej. Cierre de sesión desde panel de control..."
+                  value={closeCashierNotes}
+                  onChange={(e) => setCloseCashierNotes(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-xs focus:outline-none"
+                />
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2">
+                <button
+                  type="button"
+                  onClick={() => setClosingCashier(null)}
+                  className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs font-medium text-white transition-all cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingCloseCashier}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded-xl text-xs font-bold text-white transition-all shadow-lg shadow-red-600/20 cursor-pointer flex items-center gap-1.5"
+                >
+                  {submittingCloseCashier && <Loader2 size={14} className="animate-spin" />}
+                  <UserX size={14} />
+                  <span>Confirmar Cierre de Sesión</span>
                 </button>
               </div>
             </form>

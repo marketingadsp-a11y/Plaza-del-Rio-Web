@@ -5,6 +5,8 @@ export interface User {
   role: 'ADMIN' | 'EMPLOYEE';
   isActive: boolean;
   assignedParkingLot?: number | null; // e.g. 1, 2, or null for all/unassigned
+  sessionClosedAt?: number | null;
+  forceLogout?: boolean;
 }
 
 export interface VehicleTypeRate {
