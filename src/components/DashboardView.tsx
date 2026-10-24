@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, query, where, getDocs } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
 import { getDb } from '../lib/firebase';
-import { ParkingRecord, UserShift, VehicleTypeRate } from '../types';
+import { ParkingRecord, UserShift, VehicleTypeRate, User } from '../types';
 import { analyzeShiftDuplicates } from '../lib/shiftDeduplication';
 import { 
   Car, 
@@ -20,7 +20,11 @@ import {
   Info,
   History,
   TrendingDown,
-  Calendar
+  Calendar,
+  LogOut,
+  Check,
+  Key,
+  Copy
 } from 'lucide-react';
 import { 
   AreaChart, 
@@ -41,7 +45,11 @@ import DemoSeeder from './DemoSeeder';
 import { computeDateRange, DateFilterMode } from '../lib/dateRanges';
 import { useAppLogo } from '../lib/appConfig';
 
-export default function DashboardView() {
+interface DashboardViewProps {
+  currentUser?: User | null;
+}
+
+export default function DashboardView({ currentUser }: DashboardViewProps) {
   const { logoUrl, defaultLogo } = useAppLogo();
   const [records, setRecords] = useState<ParkingRecord[]>([]);
   const [userShifts, setUserShifts] = useState<UserShift[]>([]);
@@ -55,6 +63,47 @@ export default function DashboardView() {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   });
+
+  // Exit Vehicle Modal state
+  const [exitRecord, setExitRecord] = useState<ParkingRecord | null>(null);
+  const [exitChargeMode, setExitChargeMode] = useState<'CON_COBRO' | 'SIN_COBRO'>('CON_COBRO');
+  const [exitAmountPaid, setExitAmountPaid] = useState<number | ''>(0);
+  const [exitPaymentMethod, setExitPaymentMethod] = useState<'Efectivo' | 'Tarjeta'>('Efectivo');
+  const [exitNotes, setExitNotes] = useState<string>('');
+  const [submittingExit, setSubmittingExit] = useState(false);
+
+  // Dynamic weekly permission code from permission_codes/current -> CodigoPermiso
+  const [permissionCode, setPermissionCode] = useState<string | null>(null);
+  const [copiedPermissionCode, setCopiedPermissionCode] = useState(false);
+
+  useEffect(() => {
+    const db = getDb();
+    const unsubCode = onSnapshot(
+      doc(db, 'permission_codes', 'current'),
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          const codeVal = data?.CodigoPermiso ?? data?.codigoPermiso ?? data?.code ?? null;
+          setPermissionCode(codeVal !== null && codeVal !== undefined ? String(codeVal) : null);
+        } else {
+          setPermissionCode(null);
+        }
+      },
+      (err) => {
+        console.error('Error listening to permission_codes/current:', err);
+      }
+    );
+    return unsubCode;
+  }, []);
+
+  const handleCopyPermissionCode = () => {
+    if (!permissionCode) return;
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(permissionCode);
+      setCopiedPermissionCode(true);
+      setTimeout(() => setCopiedPermissionCode(false), 2000);
+    }
+  };
 
   // Load rates
   useEffect(() => {
@@ -168,18 +217,75 @@ export default function DashboardView() {
   }, [userShifts, cashCuts]);
 
   // Calculations
-  const activeRecords = records.filter(r => r.status === 'ACTIVE');
+  const activeRecords = React.useMemo(() => {
+    return records
+      .filter(r => r.status === 'ACTIVE')
+      .sort((a, b) => (b.entryTime || 0) - (a.entryTime || 0));
+  }, [records]);
   const activeCount = activeRecords.length;
+
+  // Open manual exit modal for an active vehicle
+  const openExitVehicleModal = (rec: ParkingRecord) => {
+    setExitRecord(rec);
+    const nowMs = Date.now();
+    const elapsedMs = Math.max(0, nowMs - (rec.entryTime || nowMs));
+    const matchedRate = rates.find(r => r.typeName.toLowerCase() === (rec.vehicleType || '').toLowerCase())
+      || rates.find(r => r.isDefault)
+      || { hourlyRate: 15 };
+    const elapsedHrs = Math.max(1, Math.ceil(elapsedMs / 3600000));
+    const suggestedFee = rec.paidAtEntry ? (rec.amountPaid || 0) : elapsedHrs * matchedRate.hourlyRate;
+
+    setExitChargeMode('CON_COBRO');
+    setExitAmountPaid(suggestedFee);
+    setExitPaymentMethod(rec.paymentMethod || 'Efectivo');
+    setExitNotes(rec.description || '');
+  };
+
+  // Process exit for active vehicle (either with payment or $0 non-accounted adjustment)
+  const handleConfirmExitVehicle = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!exitRecord || submittingExit) return;
+
+    setSubmittingExit(true);
+    try {
+      const db = getDb();
+      const recordRef = doc(db, 'parking_records', exitRecord.ticketCode);
+      const numericAmount = exitChargeMode === 'SIN_COBRO' ? 0 : Math.max(0, Number(exitAmountPaid) || 0);
+      const isNoCharge = exitChargeMode === 'SIN_COBRO' || numericAmount === 0;
+
+      const updatePayload: Record<string, any> = {
+        exitTime: Date.now(),
+        amountPaid: numericAmount,
+        paymentMethod: isNoCharge ? null : exitPaymentMethod,
+        status: 'COMPLETED',
+        processedBy: currentUser?.username || 'admin',
+        description: exitNotes.trim() || (isNoCharge ? 'Salida sin cobro ($0 - Ajuste)' : ''),
+        excludeFromAccounting: isNoCharge
+      };
+
+      if (isNoCharge) {
+        updatePayload.shiftId = null;
+      }
+
+      await updateDoc(recordRef, updatePayload);
+      setExitRecord(null);
+    } catch (err) {
+      console.error('Error al dar salida al vehículo:', err);
+    } finally {
+      setSubmittingExit(false);
+    }
+  };
 
   // Active Date Range based on selected filter
   const dateRange = React.useMemo(() => {
     return computeDateRange(dateFilterMode, customDate);
   }, [dateFilterMode, customDate]);
 
-  // Completed records in selected date range (considers collection time if paidAtEntry)
+  // Completed records in selected date range (considers collection time if paidAtEntry, excludes $0 adjustments)
   const completedInPeriod = React.useMemo(() => {
     return records.filter(r => {
       if (r.status !== 'COMPLETED') return false;
+      if (r.excludeFromAccounting) return false;
       const transactionTime = (r.paidAtEntry && r.entryTime) ? r.entryTime : (r.exitTime || r.entryTime);
       return transactionTime !== null && transactionTime !== undefined &&
         transactionTime >= dateRange.start && transactionTime <= dateRange.end;
@@ -420,9 +526,47 @@ export default function DashboardView() {
             <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">Panel de Control</h1>
           </div>
         </div>
-        <div className="flex items-center gap-2 bg-slate-800/80 border border-slate-700/60 px-4 py-2 rounded-2xl text-xs text-emerald-400 font-semibold w-fit shadow-md">
-          <span className="w-2 h-2 bg-emerald-500 rounded-full animate-ping" />
-          Sincronizado con Android
+
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Código de Permiso Dinámico (permission_codes/current -> CodigoPermiso) */}
+          <div className="flex items-center gap-2.5 bg-slate-800/90 border border-amber-500/30 px-3.5 py-2 rounded-2xl shadow-lg">
+            <div className="p-1.5 bg-amber-500/15 border border-amber-500/30 text-amber-400 rounded-xl shrink-0">
+              <Key size={15} />
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 leading-none">
+                Código de Permiso
+              </span>
+              <span className="font-mono font-extrabold text-sm text-amber-300 tracking-wider mt-0.5">
+                {permissionCode || 'Sin código'}
+              </span>
+            </div>
+            {permissionCode && (
+              <button
+                onClick={handleCopyPermissionCode}
+                title="Copiar Código de Permiso"
+                className={`ml-1 p-2 rounded-xl border transition-all cursor-pointer flex items-center gap-1 text-xs font-bold ${
+                  copiedPermissionCode
+                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                    : 'bg-slate-900 hover:bg-slate-700 border-slate-700 text-slate-300 hover:text-white'
+                }`}
+              >
+                {copiedPermissionCode ? (
+                  <>
+                    <Check size={14} className="text-emerald-400" />
+                    <span className="text-[10px]">Copiado</span>
+                  </>
+                ) : (
+                  <Copy size={14} />
+                )}
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 bg-slate-800/80 border border-slate-700/60 px-4 py-2.5 rounded-2xl text-xs text-emerald-400 font-semibold w-fit shadow-md">
+            <span className="w-2 h-2 bg-emerald-500 rounded-full animate-ping" />
+            Sincronizado con Android
+          </div>
         </div>
       </div>
 
@@ -517,17 +661,65 @@ export default function DashboardView() {
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* KPI 1: Active Vehicles */}
-        <div className="bg-slate-800/60 border border-slate-700/50 rounded-2xl p-6 shadow-xl relative overflow-hidden group hover:border-blue-500/30 transition-all duration-300">
-          <div className="absolute top-0 right-0 p-8 bg-blue-500/5 rounded-full translate-x-1/4 -translate-y-1/4 group-hover:scale-110 transition-transform" />
+        <div className="bg-slate-800/60 border border-slate-700/50 rounded-2xl p-6 shadow-xl relative overflow-hidden group hover:border-blue-500/30 transition-all duration-300 flex flex-col justify-between">
+          <div className="absolute top-0 right-0 p-8 bg-blue-500/5 rounded-full translate-x-1/4 -translate-y-1/4 group-hover:scale-110 transition-transform pointer-events-none" />
           <div className="flex items-start justify-between">
-            <div className="space-y-2">
+            <div className="space-y-1">
               <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Autos Estacionados</span>
-              <h3 className="text-3xl font-extrabold text-white">{activeCount}</h3>
-              <p className="text-[11px] text-blue-400 font-medium">Vehículos activos en el recinto</p>
+              <div className="flex items-baseline gap-2.5">
+                <h3 className="text-3xl font-extrabold text-white">{activeCount}</h3>
+                <p className="text-[11px] text-blue-400 font-medium">Vehículos activos en el recinto</p>
+              </div>
             </div>
-            <div className="p-3 bg-blue-500/10 border border-blue-500/20 text-blue-400 rounded-xl">
+            <div className="p-3 bg-blue-500/10 border border-blue-500/20 text-blue-400 rounded-xl shrink-0">
               <Car size={24} />
             </div>
+          </div>
+
+          {/* Lista compacta de tickets estacionados con botón de darle salida */}
+          <div className="mt-4 pt-3 border-t border-slate-700/50">
+            {activeRecords.length > 0 ? (
+              <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                {activeRecords.map((rec) => {
+                  const elapsedMin = Math.max(0, Math.floor((Date.now() - rec.entryTime) / 60000));
+                  const hours = Math.floor(elapsedMin / 60);
+                  const mins = elapsedMin % 60;
+                  const elapsedStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+
+                  return (
+                    <div
+                      key={rec.ticketCode}
+                      className="flex items-center justify-between gap-2 bg-slate-900/75 border border-slate-700/60 rounded-xl px-3 py-2 text-xs hover:border-blue-500/40 transition-all"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-mono font-bold text-blue-400 shrink-0" title="Número de Ticket">
+                          #{rec.ticketCode}
+                        </span>
+                        <span className="px-2 py-0.5 bg-slate-950 border border-slate-700 text-white font-mono rounded font-bold text-[11px] truncate">
+                          {rec.plate}
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono shrink-0">
+                          {elapsedStr}
+                        </span>
+                      </div>
+
+                      <button
+                        onClick={() => openExitVehicleModal(rec)}
+                        title={`Dar salida al ticket ${rec.ticketCode}`}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 text-[11px] font-bold transition-all cursor-pointer shrink-0"
+                      >
+                        <LogOut size={13} />
+                        <span>Salida</span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-500 italic">
+                Sin autos estacionados en este momento
+              </p>
+            )}
           </div>
         </div>
 
@@ -852,10 +1044,11 @@ export default function DashboardView() {
                     <th className="py-3 px-2">Tipo</th>
                     <th className="py-3 px-2">Hora Entrada</th>
                     <th className="py-3 px-2 text-right">Duración</th>
+                    <th className="py-3 px-2 text-right">Dar Salida</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {activeRecords.slice(0, 5).map((rec) => {
+                  {activeRecords.slice(0, 10).map((rec) => {
                     const elapsedMin = Math.max(0, Math.floor((Date.now() - rec.entryTime) / 60000));
                     const hours = Math.floor(elapsedMin / 60);
                     const mins = elapsedMin % 60;
@@ -863,7 +1056,7 @@ export default function DashboardView() {
 
                     return (
                       <tr key={rec.ticketCode} className="border-b border-slate-800/60 hover:bg-slate-700/20 text-xs text-slate-300">
-                        <td className="py-3 px-2 font-mono font-bold text-blue-400">{rec.ticketCode}</td>
+                        <td className="py-3 px-2 font-mono font-bold text-blue-400">#{rec.ticketCode}</td>
                         <td className="py-3 px-2">
                           <span className="px-2 py-0.5 bg-slate-900 border border-slate-700 text-white font-mono rounded font-semibold text-[11px]">
                             {rec.plate}
@@ -874,6 +1067,16 @@ export default function DashboardView() {
                           {new Date(rec.entryTime).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
                         </td>
                         <td className="py-3 px-2 text-right font-mono font-semibold text-amber-400">{elapsedStr}</td>
+                        <td className="py-3 px-2 text-right">
+                          <button
+                            onClick={() => openExitVehicleModal(rec)}
+                            title={`Dar salida al ticket ${rec.ticketCode}`}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-600/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-600 hover:text-white text-xs font-bold transition-all cursor-pointer"
+                          >
+                            <LogOut size={13} />
+                            <span>Dar Salida</span>
+                          </button>
+                        </td>
                       </tr>
                     );
                   })}
@@ -1050,6 +1253,226 @@ export default function DashboardView() {
                 Cerrar Auditoría
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Dar Salida a Vehículo Estacionado (Con cobro o Sin cobro $0 para ajuste) */}
+      {exitRecord && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 py-6 backdrop-blur-sm">
+          <div className="bg-slate-800 border border-slate-700 rounded-3xl p-6 w-full max-w-md shadow-2xl relative animate-fade-in">
+            <button
+              onClick={() => setExitRecord(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-xl hover:bg-slate-700/50 cursor-pointer"
+            >
+              <X size={20} />
+            </button>
+
+            <h3 className="text-lg font-bold text-white mb-3 flex items-center gap-2">
+              <LogOut size={20} className="text-emerald-400" />
+              Dar Salida a Vehículo
+            </h3>
+
+            {/* Resumen del Ticket */}
+            <div className="bg-slate-900/75 p-4 rounded-2xl border border-slate-700/60 mb-4 space-y-2">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Ticket:</span>
+                <span className="font-mono font-bold text-blue-400 text-sm">#{exitRecord.ticketCode}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Placa:</span>
+                <span className="font-mono bg-slate-950 border border-slate-700 px-2 py-0.5 rounded text-yellow-400 font-bold">
+                  {exitRecord.plate}
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Tipo de Vehículo:</span>
+                <span className="font-semibold text-slate-200">{exitRecord.vehicleType}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Hora de Entrada:</span>
+                <span className="text-slate-300">
+                  {new Date(exitRecord.entryTime).toLocaleDateString('es-MX')}{' '}
+                  {new Date(exitRecord.entryTime).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Tiempo Estacionado:</span>
+                <span className="text-amber-400 font-semibold font-mono">
+                  {Math.max(1, Math.ceil((Date.now() - exitRecord.entryTime) / 60000))} min
+                </span>
+              </div>
+            </div>
+
+            <form onSubmit={handleConfirmExitVehicle} className="space-y-4">
+              {/* Selector: ¿Se cobró o fue salida sin cobro ($0)? */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
+                  ¿Se realizó cobro al darle salida?
+                </label>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExitChargeMode('CON_COBRO');
+                      if (exitAmountPaid === 0 || exitAmountPaid === '') {
+                        const matchedRate = rates.find(r => r.typeName.toLowerCase() === (exitRecord.vehicleType || '').toLowerCase())
+                          || rates.find(r => r.isDefault)
+                          || { hourlyRate: 15 };
+                        const elapsedHrs = Math.max(1, Math.ceil(Math.max(0, Date.now() - exitRecord.entryTime) / 3600000));
+                        setExitAmountPaid(elapsedHrs * matchedRate.hourlyRate);
+                      }
+                    }}
+                    className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                      exitChargeMode === 'CON_COBRO'
+                        ? 'bg-emerald-600/20 border-emerald-500 text-emerald-300 shadow-sm'
+                        : 'bg-slate-900/60 border-slate-700 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <DollarSign size={14} />
+                      <span>Sí se cobró</span>
+                    </div>
+                    <span className="text-[10px] font-normal opacity-80">Contabilizar monto</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExitChargeMode('SIN_COBRO');
+                      setExitAmountPaid(0);
+                    }}
+                    className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                      exitChargeMode === 'SIN_COBRO'
+                        ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow-sm'
+                        : 'bg-slate-900/60 border-slate-700 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <X size={14} />
+                      <span>Sin cobro ($0)</span>
+                    </div>
+                    <span className="text-[10px] font-normal opacity-80">No contabilizar / Ajuste</span>
+                  </button>
+                </div>
+              </div>
+
+              {exitChargeMode === 'CON_COBRO' ? (
+                <>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
+                      Monto Cobrado ($)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      required
+                      value={exitAmountPaid}
+                      onChange={(e) => setExitAmountPaid(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-base font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+                    />
+                    <div className="flex items-center gap-1.5 mt-2">
+                      <span className="text-[10px] text-slate-400">Rápido:</span>
+                      {[0, 15, 30, 45, 60].map((val) => (
+                        <button
+                          key={val}
+                          type="button"
+                          onClick={() => {
+                            setExitAmountPaid(val);
+                            if (val === 0) setExitChargeMode('SIN_COBRO');
+                          }}
+                          className="px-2 py-0.5 rounded-lg bg-slate-900 hover:bg-slate-700 border border-slate-700 text-[11px] font-mono text-slate-300 cursor-pointer"
+                        >
+                          ${val}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
+                      Método de Pago
+                    </label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setExitPaymentMethod('Efectivo')}
+                        className={`py-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                          exitPaymentMethod === 'Efectivo'
+                            ? 'bg-emerald-600/20 border-emerald-500 text-emerald-400 font-bold'
+                            : 'bg-slate-900/60 border-slate-700 text-slate-400'
+                        }`}
+                      >
+                        <Check size={14} className={exitPaymentMethod === 'Efectivo' ? 'opacity-100' : 'opacity-0'} />
+                        Efectivo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setExitPaymentMethod('Tarjeta')}
+                        className={`py-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                          exitPaymentMethod === 'Tarjeta'
+                            ? 'bg-blue-600/20 border-blue-500 text-blue-400 font-bold'
+                            : 'bg-slate-900/60 border-slate-700 text-slate-400'
+                        }`}
+                      >
+                        <Check size={14} className={exitPaymentMethod === 'Tarjeta' ? 'opacity-100' : 'opacity-0'} />
+                        Tarjeta
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-3.5 text-xs text-amber-200 space-y-1">
+                  <div className="font-bold flex items-center gap-1.5 text-amber-300">
+                    <Info size={14} className="shrink-0" />
+                    <span>Salida con Monto $0.00 (Sin Contabilizar)</span>
+                  </div>
+                  <p className="text-[11px] text-amber-200/80 leading-relaxed">
+                    El auto se retirará de <strong>Autos Estacionados</strong> con monto <strong>$0.00</strong> y no sumará dinero a los ingresos ni afectará el corte de caja.
+                  </p>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
+                  Motivo / Observaciones de Salida
+                </label>
+                <input
+                  type="text"
+                  placeholder={exitChargeMode === 'SIN_COBRO' ? 'Ej. Ajuste de corte de caja / Salida sin cobro...' : 'Notas opcionales de salida...'}
+                  value={exitNotes}
+                  onChange={(e) => setExitNotes(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-xs focus:outline-none"
+                />
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2">
+                <button
+                  type="button"
+                  onClick={() => setExitRecord(null)}
+                  className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs font-medium text-white transition-all cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingExit}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold text-white transition-all shadow-lg cursor-pointer flex items-center gap-1.5 ${
+                    exitChargeMode === 'SIN_COBRO'
+                      ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-600/15'
+                      : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/15'
+                  }`}
+                >
+                  {submittingExit && <Loader2 size={14} className="animate-spin" />}
+                  <span>
+                    {exitChargeMode === 'SIN_COBRO'
+                      ? 'Dar Salida sin Cobro ($0)'
+                      : `Confirmar Salida ($${Number(exitAmountPaid || 0).toFixed(2)})`}
+                  </span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

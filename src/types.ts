@@ -32,6 +32,7 @@ export interface ParkingRecord {
   paidAtEntry: boolean;
   physicalType: string | null;
   parkingLotId?: number | null;
+  excludeFromAccounting?: boolean;
 }
 
 export interface PrepaidVehicle {

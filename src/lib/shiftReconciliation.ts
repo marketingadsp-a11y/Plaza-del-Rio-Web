@@ -28,6 +28,11 @@ export function reconcileShiftRecords(
   const shiftUser = (shift.username || '').trim().toLowerCase();
 
   const matched = allRecords.filter((r) => {
+    // 0. Skip tickets closed with $0 administrative exit (excludeFromAccounting)
+    if (r.excludeFromAccounting) {
+      return false;
+    }
+
     // 1. Exact shiftId match
     if (r.shiftId && r.shiftId === shift.shiftId) {
       return true;

@@ -61,7 +61,7 @@ export default function App() {
   const renderView = () => {
     switch (activeTab) {
       case 'dashboard':
-        return <DashboardView />;
+        return <DashboardView currentUser={currentUser} />;
       case 'records':
         return <ParkingRecordsView currentUser={currentUser} />;
       case 'rates':
@@ -77,7 +77,7 @@ export default function App() {
       case 'reports':
         return <ReportsView />;
       default:
-        return <DashboardView />;
+        return <DashboardView currentUser={currentUser} />;
     }
   };
 

@@ -76,6 +76,7 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
   const [editParkingLotId, setEditParkingLotId] = useState<number>(1);
 
   // Form states for Manual Exit Processing
+  const [exitChargeMode, setExitChargeMode] = useState<'CON_COBRO' | 'SIN_COBRO'>('CON_COBRO');
   const [exitPaymentMethod, setExitPaymentMethod] = useState<'Efectivo' | 'Tarjeta'>('Efectivo');
   const [exitAmountPaid, setExitAmountPaid] = useState<number>(0);
   const [exitNotes, setExitNotes] = useState('');
@@ -335,12 +336,13 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
     // Find the hourly rate
     const matchedRate = rates.find(r => r.typeName.toLowerCase() === rec.vehicleType.toLowerCase()) 
       || rates.find(r => r.isDefault) 
-      || { hourlyRate: 20 };
+      || { hourlyRate: 15 };
     
     // Standard parking calculation: ceiling of elapsed hours
     const elapsedHrs = Math.max(1, Math.ceil(elapsedMs / 3600000));
     const calculatedFee = elapsedHrs * matchedRate.hourlyRate;
 
+    setExitChargeMode('CON_COBRO');
     setExitAmountPaid(calculatedFee);
     setExitPaymentMethod('Efectivo');
     setExitNotes(rec.description || '');
@@ -356,15 +358,24 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
     try {
       const db = getDb();
       const recordRef = doc(db, 'parking_records', selectedRecord.ticketCode);
+      const numericAmount = exitChargeMode === 'SIN_COBRO' ? 0 : Math.max(0, Number(exitAmountPaid) || 0);
+      const isNoCharge = exitChargeMode === 'SIN_COBRO' || numericAmount === 0;
 
-      await updateDoc(recordRef, {
+      const updatePayload: Record<string, any> = {
         exitTime: Date.now(),
-        amountPaid: exitAmountPaid,
-        paymentMethod: exitPaymentMethod,
+        amountPaid: numericAmount,
+        paymentMethod: isNoCharge ? null : exitPaymentMethod,
         status: 'COMPLETED',
         processedBy: currentUser.username,
-        description: exitNotes
-      });
+        description: exitNotes.trim() || (isNoCharge ? 'Salida sin cobro ($0 - Ajuste)' : ''),
+        excludeFromAccounting: isNoCharge
+      };
+
+      if (isNoCharge) {
+        updatePayload.shiftId = null;
+      }
+
+      await updateDoc(recordRef, updatePayload);
 
       setIsExitModalOpen(false);
     } catch (err) {
@@ -985,47 +996,105 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
 
             <form onSubmit={handleProcessExit} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
-                  Monto a Cobrar ($)
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
+                  ¿Se realizó cobro al darle salida?
                 </label>
-                <input
-                  type="number"
-                  required
-                  value={exitAmountPaid}
-                  onChange={(e) => setExitAmountPaid(Number(e.target.value))}
-                  className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-md font-bold focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
-                  Método de Pago
-                </label>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-2.5">
                   <button
                     type="button"
-                    onClick={() => setExitPaymentMethod('Efectivo')}
-                    className={`py-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all
-                      ${exitPaymentMethod === 'Efectivo' 
-                        ? 'bg-emerald-600/20 border-emerald-500 text-emerald-400 font-bold' 
-                        : 'bg-slate-900/60 border-slate-700 text-slate-400'}`}
+                    onClick={() => setExitChargeMode('CON_COBRO')}
+                    className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                      exitChargeMode === 'CON_COBRO'
+                        ? 'bg-emerald-600/20 border-emerald-500 text-emerald-300 shadow-sm'
+                        : 'bg-slate-900/60 border-slate-700 text-slate-400 hover:text-white'
+                    }`}
                   >
-                    <Check size={14} className={exitPaymentMethod === 'Efectivo' ? 'opacity-100' : 'opacity-0'} />
-                    Efectivo
+                    <div className="flex items-center gap-1.5">
+                      <DollarSign size={14} />
+                      <span>Sí se cobró</span>
+                    </div>
+                    <span className="text-[10px] font-normal opacity-80">Contabilizar monto</span>
                   </button>
+
                   <button
                     type="button"
-                    onClick={() => setExitPaymentMethod('Tarjeta')}
-                    className={`py-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all
-                      ${exitPaymentMethod === 'Tarjeta' 
-                        ? 'bg-blue-600/20 border-blue-500 text-blue-400 font-bold' 
-                        : 'bg-slate-900/60 border-slate-700 text-slate-400'}`}
+                    onClick={() => {
+                      setExitChargeMode('SIN_COBRO');
+                      setExitAmountPaid(0);
+                    }}
+                    className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                      exitChargeMode === 'SIN_COBRO'
+                        ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow-sm'
+                        : 'bg-slate-900/60 border-slate-700 text-slate-400 hover:text-white'
+                    }`}
                   >
-                    <Check size={14} className={exitPaymentMethod === 'Tarjeta' ? 'opacity-100' : 'opacity-0'} />
-                    Tarjeta
+                    <div className="flex items-center gap-1.5">
+                      <X size={14} />
+                      <span>Sin cobro ($0)</span>
+                    </div>
+                    <span className="text-[10px] font-normal opacity-80">No contabilizar / Ajuste</span>
                   </button>
                 </div>
               </div>
+
+              {exitChargeMode === 'CON_COBRO' ? (
+                <>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
+                      Monto a Cobrar ($)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      required
+                      value={exitAmountPaid}
+                      onChange={(e) => setExitAmountPaid(Number(e.target.value))}
+                      className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-md font-bold focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
+                      Método de Pago
+                    </label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setExitPaymentMethod('Efectivo')}
+                        className={`py-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer
+                          ${exitPaymentMethod === 'Efectivo' 
+                            ? 'bg-emerald-600/20 border-emerald-500 text-emerald-400 font-bold' 
+                            : 'bg-slate-900/60 border-slate-700 text-slate-400'}`}
+                      >
+                        <Check size={14} className={exitPaymentMethod === 'Efectivo' ? 'opacity-100' : 'opacity-0'} />
+                        Efectivo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setExitPaymentMethod('Tarjeta')}
+                        className={`py-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer
+                          ${exitPaymentMethod === 'Tarjeta' 
+                            ? 'bg-blue-600/20 border-blue-500 text-blue-400 font-bold' 
+                            : 'bg-slate-900/60 border-slate-700 text-slate-400'}`}
+                      >
+                        <Check size={14} className={exitPaymentMethod === 'Tarjeta' ? 'opacity-100' : 'opacity-0'} />
+                        Tarjeta
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-3.5 text-xs text-amber-200 space-y-1">
+                  <div className="font-bold flex items-center gap-1.5 text-amber-300">
+                    <Info size={14} className="shrink-0" />
+                    <span>Salida con Monto $0.00 (Sin Contabilizar)</span>
+                  </div>
+                  <p className="text-[11px] text-amber-200/80 leading-relaxed">
+                    El auto saldrá con monto <strong>$0.00</strong> y no sumará dinero a los ingresos ni afectará el corte de caja.
+                  </p>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
@@ -1033,7 +1102,7 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
                 </label>
                 <input
                   type="text"
-                  placeholder="Salida registrada por admin..."
+                  placeholder={exitChargeMode === 'SIN_COBRO' ? 'Ej. Ajuste de corte de caja / Salida sin cobro...' : 'Salida registrada por admin...'}
                   value={exitNotes}
                   onChange={(e) => setExitNotes(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-sm focus:outline-none"
@@ -1044,15 +1113,21 @@ export default function ParkingRecordsView({ currentUser }: ParkingRecordsViewPr
                 <button
                   type="button"
                   onClick={() => setIsExitModalOpen(false)}
-                  className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs font-medium text-white transition-all"
+                  className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs font-medium text-white transition-all cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-xs font-semibold text-white transition-all shadow-lg shadow-emerald-600/10"
+                  className={`px-4 py-2 rounded-xl text-xs font-semibold text-white transition-all shadow-lg cursor-pointer ${
+                    exitChargeMode === 'SIN_COBRO'
+                      ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-600/10'
+                      : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/10'
+                  }`}
                 >
-                  Registrar Cobro y Salida
+                  {exitChargeMode === 'SIN_COBRO'
+                    ? 'Dar Salida sin Cobro ($0)'
+                    : 'Registrar Cobro y Salida'}
                 </button>
               </div>
             </form>
