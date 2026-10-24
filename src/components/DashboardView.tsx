@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, getDocs, doc, updateDoc, setDoc } from 'firebase/firestore';
 import { getDb } from '../lib/firebase';
 import { ParkingRecord, UserShift, VehicleTypeRate, User } from '../types';
 import { analyzeShiftDuplicates } from '../lib/shiftDeduplication';
@@ -24,7 +24,8 @@ import {
   LogOut,
   Check,
   Key,
-  Copy
+  Copy,
+  RefreshCw
 } from 'lucide-react';
 import { 
   AreaChart, 
@@ -75,6 +76,7 @@ export default function DashboardView({ currentUser }: DashboardViewProps) {
   // Dynamic weekly permission code from permission_codes/current -> CodigoPermiso
   const [permissionCode, setPermissionCode] = useState<string | null>(null);
   const [copiedPermissionCode, setCopiedPermissionCode] = useState(false);
+  const [generatingPermissionCode, setGeneratingPermissionCode] = useState(false);
 
   useEffect(() => {
     const db = getDb();
@@ -102,6 +104,31 @@ export default function DashboardView({ currentUser }: DashboardViewProps) {
       navigator.clipboard.writeText(permissionCode);
       setCopiedPermissionCode(true);
       setTimeout(() => setCopiedPermissionCode(false), 2000);
+    }
+  };
+
+  const handleGenerateNewPermissionCode = async () => {
+    if (generatingPermissionCode) return;
+    setGeneratingPermissionCode(true);
+    try {
+      const db = getDb();
+      let newCode = String(Math.floor(1000 + Math.random() * 9000));
+      if (newCode === permissionCode) {
+        newCode = String(Math.floor(1000 + Math.random() * 9000));
+      }
+      await setDoc(
+        doc(db, 'permission_codes', 'current'),
+        {
+          CodigoPermiso: newCode,
+          updatedAt: Date.now()
+        },
+        { merge: true }
+      );
+      setPermissionCode(newCode);
+    } catch (err) {
+      console.error('Error generating new permission code:', err);
+    } finally {
+      setGeneratingPermissionCode(false);
     }
   };
 
@@ -541,26 +568,36 @@ export default function DashboardView({ currentUser }: DashboardViewProps) {
                 {permissionCode || 'Sin código'}
               </span>
             </div>
-            {permissionCode && (
+            <div className="flex items-center gap-1.5 ml-1">
+              {permissionCode && (
+                <button
+                  onClick={handleCopyPermissionCode}
+                  title="Copiar Código de Permiso"
+                  className={`p-2 rounded-xl border transition-all cursor-pointer flex items-center gap-1 text-xs font-bold ${
+                    copiedPermissionCode
+                      ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                      : 'bg-slate-900 hover:bg-slate-700 border-slate-700 text-slate-300 hover:text-white'
+                  }`}
+                >
+                  {copiedPermissionCode ? (
+                    <>
+                      <Check size={14} className="text-emerald-400" />
+                      <span className="text-[10px]">Copiado</span>
+                    </>
+                  ) : (
+                    <Copy size={14} />
+                  )}
+                </button>
+              )}
               <button
-                onClick={handleCopyPermissionCode}
-                title="Copiar Código de Permiso"
-                className={`ml-1 p-2 rounded-xl border transition-all cursor-pointer flex items-center gap-1 text-xs font-bold ${
-                  copiedPermissionCode
-                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
-                    : 'bg-slate-900 hover:bg-slate-700 border-slate-700 text-slate-300 hover:text-white'
-                }`}
+                onClick={handleGenerateNewPermissionCode}
+                disabled={generatingPermissionCode}
+                title="Generar nuevo Código de Permiso"
+                className="p-2 rounded-xl border bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/30 text-amber-300 hover:text-amber-200 transition-all cursor-pointer flex items-center gap-1 text-xs font-bold disabled:opacity-50"
               >
-                {copiedPermissionCode ? (
-                  <>
-                    <Check size={14} className="text-emerald-400" />
-                    <span className="text-[10px]">Copiado</span>
-                  </>
-                ) : (
-                  <Copy size={14} />
-                )}
+                <RefreshCw size={14} className={generatingPermissionCode ? 'animate-spin' : ''} />
               </button>
-            )}
+            </div>
           </div>
 
           <div className="flex items-center gap-2 bg-slate-800/80 border border-slate-700/60 px-4 py-2.5 rounded-2xl text-xs text-emerald-400 font-semibold w-fit shadow-md">
