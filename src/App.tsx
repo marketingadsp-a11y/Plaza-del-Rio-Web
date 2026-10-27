@@ -9,6 +9,7 @@ import ShiftsView from './components/ShiftsView';
 import PrepaidView from './components/PrepaidView';
 import TicketConfigView from './components/TicketConfigView';
 import ReportsView from './components/ReportsView';
+import BackupAnalyzerView from './components/BackupAnalyzerView';
 import { User } from './types';
 import { Shield, Loader2 } from 'lucide-react';
 
@@ -76,6 +77,8 @@ export default function App() {
         return <TicketConfigView />;
       case 'reports':
         return <ReportsView />;
+      case 'backups':
+        return <BackupAnalyzerView />;
       default:
         return <DashboardView currentUser={currentUser} />;
     }

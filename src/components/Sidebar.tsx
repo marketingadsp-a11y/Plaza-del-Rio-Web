@@ -14,7 +14,8 @@ import {
   User as UserIcon,
   ShieldAlert,
   BarChart3,
-  Sliders
+  Sliders,
+  FileCheck2
 } from 'lucide-react';
 import { User } from '../types';
 import { getPreferredDbId, setPreferredDbId } from '../lib/firebase';
@@ -36,12 +37,13 @@ export default function Sidebar({ activeTab, onTabChange, currentUser, onLogout 
   const menuItems = [
     { id: 'dashboard', label: 'Vista General', icon: LayoutDashboard },
     { id: 'records', label: 'Registros y Tickets', icon: FileSpreadsheet },
-    { id: 'rates', label: 'Tarifas por Vehículo', icon: DollarSign },
-    { id: 'users', label: 'Cajeros y Usuarios', icon: Users },
-    { id: 'shifts', label: 'Turnos y Cortes', icon: History },
     { id: 'prepaid', label: 'Pensionados / Mensuales', icon: CreditCard },
-    { id: 'config', label: 'Configuración y Logotipo', icon: Sliders },
+    { id: 'backups', label: 'Analizar Respaldos', icon: FileCheck2 },
+    { id: 'shifts', label: 'Turnos y Cortes', icon: History },
+    { id: 'users', label: 'Cajeros y Usuarios', icon: Users },
+    { id: 'rates', label: 'Tarifas por Vehículo', icon: DollarSign },
     { id: 'reports', label: 'Reportes y Descargas', icon: BarChart3 },
+    { id: 'config', label: 'Configuración y Logotipo', icon: Sliders },
   ];
 
   const handleDbSave = (e: React.FormEvent) => {
